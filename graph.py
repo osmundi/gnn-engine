@@ -449,8 +449,11 @@ class AttentionEPDGNN(nn.Module):
 
 
 if __name__ == '__main__':
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
     # dataset = FENDataset('chessData.csv')
-    dataset = FENDataset('first_100k_evaluations.csv')
+    dataset = FENDataset('first_100k_evaluations.csv').to(device)
 
     # Separate data to training, validation and testing sets
     # Define lengths for train, validation, and test
@@ -488,7 +491,6 @@ if __name__ == '__main__':
     criterion = torch.nn.MSELoss()
 
     # Move model to GPU if available
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model.to(device)
 
     # Training loop
