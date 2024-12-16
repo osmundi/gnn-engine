@@ -555,9 +555,6 @@ with mlflow.start_run() as run:
             # Log metrics
             mlflow.log_metric("train_loss", avg_train_loss, step=epoch)
 
-            # Save the model and log it to the MLflow server
-            # mlflow.log_artifact('AttentionEPDGNN_checkpoint.pt')
-            mlflow.pytorch.log_model(model, "model")
 
         checkpoint = 'AttentionEPDGNN_checkpoint_{:03d}.pt'.format(epoch+1)
 
@@ -596,6 +593,13 @@ with mlflow.start_run() as run:
 
         print(
             f'Validation Loss: {avg_val_loss:.4f}, MAE={avg_mae:.4f}')
+
+
+# Save the model and log it to the MLflow server
+# mlflow.log_artifact('AttentionEPDGNN_checkpoint.pt')
+if tracking_url:
+    mlflow.pytorch.log_model(model, "model")
+
 
 # Test after training is done
 model.eval()  # Set model to evaluation mode for testing
