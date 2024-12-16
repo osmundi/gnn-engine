@@ -359,10 +359,6 @@ class FENDataset(Dataset):
         return graph
 
 
-# dataset = FENDataset('chessData.csv')
-dataset = FENDataset('first_100k_evaluations.csv')
-
-
 # Custom Message Passing Layer
 class CustomMessagePassing(MessagePassing):
     def __init__(self, in_channels, out_channels, aggr='add'):
@@ -452,177 +448,176 @@ class AttentionEPDGNN(nn.Module):
         return out
 
 
-# Separate data to training, validation and testing sets
-# Define lengths for train, validation, and test
-train_len = int(0.7 * len(dataset))  # 70% for training
-val_len = int(0.15 * len(dataset))   # 15% for validation
-test_len = len(dataset) - train_len - val_len  # 15% for testing
+if __name__ == '__main__':
+    # dataset = FENDataset('chessData.csv')
+    dataset = FENDataset('first_100k_evaluations.csv')
 
-# Split the dataset into train, validation, and test sets
-train_dataset, val_dataset, test_dataset = random_split(
-    dataset, [train_len, val_len, test_len])
+    # Separate data to training, validation and testing sets
+    # Define lengths for train, validation, and test
+    train_len = int(0.7 * len(dataset))  # 70% for training
+    val_len = int(0.15 * len(dataset))   # 15% for validation
+    test_len = len(dataset) - train_len - val_len  # 15% for testing
 
-# Create DataLoaders for each split
-train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
-test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+    # Split the dataset into train, validation, and test sets
+    train_dataset, val_dataset, test_dataset = random_split(
+        dataset, [train_len, val_len, test_len])
 
+    # Create DataLoaders for each split
+    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
 
-# Training loop
+    # Training loop
 
-# Hyperparameters
-in_channels = 13   # Features per node
-hidden_channels = 64
-num_iterations = 3
+    # Hyperparameters
+    in_channels = 13   # Features per node
+    hidden_channels = 64
+    num_iterations = 3
 
-# Model
-model = AttentionEPDGNN(
-    in_channels=in_channels,
-    hidden_channels=hidden_channels,
-    out_channels=1
-)
+    # Model
+    model = AttentionEPDGNN(
+        in_channels=in_channels,
+        hidden_channels=hidden_channels,
+        out_channels=1
+    )
 
-# Optimizer
-optimizer = optim.Adam(model.parameters(), lr=0.001)
+    # Optimizer
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
 
-# Mean Squared Error for regression (centipawn evaluation)
-criterion = torch.nn.MSELoss()
+    # Mean Squared Error for regression (centipawn evaluation)
+    criterion = torch.nn.MSELoss()
 
-# Move model to GPU if available
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-model.to(device)
+    # Move model to GPU if available
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model.to(device)
 
-# Training loop
-epochs = 2  # Number of epochs to train for
+    # Training loop
+    epochs = 2  # Number of epochs to train for
 
-# Set remote MLflow tracking URI
-tracking_url = os.environ['TRACKING_URL']
+    # Set remote MLflow tracking URI
+    tracking_url = os.environ['TRACKING_URL']
 
-if tracking_url:
-    mlflow.set_tracking_uri(tracking_url)
+    if tracking_url:
+        mlflow.set_tracking_uri(tracking_url)
 
-    # Start an MLflow experiment
-    mlflow.set_experiment("GNN evaluation training")
+        # Start an MLflow experiment
+        mlflow.set_experiment("GNN evaluation training")
 
-with mlflow.start_run() as run:
-    # Log hyperparameters
-    mlflow.log_param("num_epochs", epochs)
-    mlflow.log_param("batch_size", batch_size)
-    mlflow.log_param("learning_rate", 0.001)
+    with mlflow.start_run() as run:
+        # Log hyperparameters
+        mlflow.log_param("num_epochs", epochs)
+        mlflow.log_param("batch_size", batch_size)
+        mlflow.log_param("learning_rate", 0.001)
 
-    for epoch in range(epochs):
-        print(f"Epoch: {epoch}")
-        model.train()  # Set model to training mode
-        train_loss = 0.0
-        total_mae = 0
+        for epoch in range(epochs):
+            print(f"Epoch: {epoch}")
+            model.train()  # Set model to training mode
+            train_loss = 0.0
+            total_mae = 0
 
-        for batch in train_loader:
-            batch = batch.to(device)  # Move batch to device (GPU or CPU)
+            for batch in train_loader:
+                batch = batch.to(device)  # Move batch to device (GPU or CPU)
 
-            # Zero gradients
-            optimizer.zero_grad()
+                # Zero gradients
+                optimizer.zero_grad()
 
-            # Forward pass: Get model predictions
-            output = model(batch.x, batch.edge_index, edge_attr=batch.edge_attr)
-
-            # Calculate the loss
-            # Assuming batch.y contains the labels
-            loss = criterion(output, batch.y)
-            # loss = criterion(output.squeeze(), batch.y)  # Compute loss
-
-            loss.backward()  # Backpropagation
-            optimizer.step()  # Optimizer step
-
-            # Track loss
-            train_loss += loss.item()
-            predicted = output.squeeze()
-
-            # Track MAE
-            mae = torch.mean(torch.abs(predicted - batch.y))
-            total_mae += mae.item()
-
-        # Calculate MAE
-        avg_mae = total_mae / len(train_loader)
-
-        # Calculate average training loss and accuracy
-        avg_train_loss = train_loss / len(train_loader)
-
-        print(
-            f'Epoch {epoch+1}/{epochs}, Loss: {avg_train_loss:.4f}, MAE={avg_mae:.4f}')
-
-
-        if tracking_url:
-            # Log metrics
-            mlflow.log_metric("train_loss", avg_train_loss, step=epoch)
-
-
-        checkpoint = 'AttentionEPDGNN_checkpoint_{:03d}.pt'.format(epoch+1)
-
-        torch.save({
-            'epoch': epoch + 1,
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'loss': avg_train_loss,
-        }, checkpoint)
-
-        print(f"Checkpoint saved to: {checkpoint}")
-
-        # Validation step (no gradients needed)
-        model.eval()  # Set model to evaluation mode
-        val_loss = 0.0
-
-        with torch.no_grad():  # No gradients needed during validation
-            for batch in val_loader:
-                batch = batch.to(device)
-
+                # Forward pass: Get model predictions
                 output = model(batch.x, batch.edge_index,
                                edge_attr=batch.edge_attr)
-                loss = criterion(output, batch.y)
-                val_loss += loss.item()
 
+                # Calculate the loss
+                # Assuming batch.y contains the labels
+                loss = criterion(output, batch.y)
+                # loss = criterion(output.squeeze(), batch.y)  # Compute loss
+
+                loss.backward()  # Backpropagation
+                optimizer.step()  # Optimizer step
+
+                # Track loss
+                train_loss += loss.item()
                 predicted = output.squeeze()
 
-                # MAE calculation
+                # Track MAE
                 mae = torch.mean(torch.abs(predicted - batch.y))
                 total_mae += mae.item()
 
-        # Calculate training accuracy
-        avg_mae = total_mae / len(val_loader)
+            # Calculate MAE
+            avg_mae = total_mae / len(train_loader)
 
-        avg_val_loss = val_loss / len(val_loader)
+            # Calculate average training loss and accuracy
+            avg_train_loss = train_loss / len(train_loader)
 
-        print(
-            f'Validation Loss: {avg_val_loss:.4f}, MAE={avg_mae:.4f}')
+            print(
+                f'Epoch {epoch+1}/{epochs}, Loss: {avg_train_loss:.4f}, MAE={avg_mae:.4f}')
 
+            if tracking_url:
+                # Log metrics
+                mlflow.log_metric("train_loss", avg_train_loss, step=epoch)
 
-# Save the model and log it to the MLflow server
-# mlflow.log_artifact('AttentionEPDGNN_checkpoint.pt')
-if tracking_url:
-    mlflow.pytorch.log_model(model, "model")
+            checkpoint = 'AttentionEPDGNN_checkpoint_{:03d}.pt'.format(epoch+1)
 
+            torch.save({
+                'epoch': epoch + 1,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'loss': avg_train_loss,
+            }, checkpoint)
 
-# Test after training is done
-model.eval()  # Set model to evaluation mode for testing
-test_loss = 0.0
+            print(f"Checkpoint saved to: {checkpoint}")
 
-with torch.no_grad():
-    for batch in test_loader:
-        batch = batch.to(device)
+            # Validation step (no gradients needed)
+            model.eval()  # Set model to evaluation mode
+            val_loss = 0.0
 
-        output = model(batch.x, batch.edge_index, batch.edge_attr)
-        loss = criterion(output, batch.y)
-        test_loss += loss.item()
+            with torch.no_grad():  # No gradients needed during validation
+                for batch in val_loader:
+                    batch = batch.to(device)
 
-        predicted = output.squeeze()
+                    output = model(batch.x, batch.edge_index,
+                                   edge_attr=batch.edge_attr)
+                    loss = criterion(output, batch.y)
+                    val_loss += loss.item()
 
-        # MAE calculation
-        mae = torch.mean(torch.abs(predicted - batch.y))
-        total_mae += mae.item()
+                    predicted = output.squeeze()
 
-# Calculate training accuracy
-avg_mae = total_mae / len(test_loader)
+                    # MAE calculation
+                    mae = torch.mean(torch.abs(predicted - batch.y))
+                    total_mae += mae.item()
 
-avg_test_loss = test_loss / len(test_loader)
+            # Calculate training accuracy
+            avg_mae = total_mae / len(val_loader)
 
-print(f'Test Loss: {avg_test_loss:.4f}, MAE={avg_mae:.4f}')
+            avg_val_loss = val_loss / len(val_loader)
 
+            print(
+                f'Validation Loss: {avg_val_loss:.4f}, MAE={avg_mae:.4f}')
+
+    # Save the model and log it to the MLflow server
+    # mlflow.log_artifact('AttentionEPDGNN_checkpoint.pt')
+    if tracking_url:
+        mlflow.pytorch.log_model(model, "model")
+
+    # Test after training is done
+    model.eval()  # Set model to evaluation mode for testing
+    test_loss = 0.0
+
+    with torch.no_grad():
+        for batch in test_loader:
+            batch = batch.to(device)
+
+            output = model(batch.x, batch.edge_index, batch.edge_attr)
+            loss = criterion(output, batch.y)
+            test_loss += loss.item()
+
+            predicted = output.squeeze()
+
+            # MAE calculation
+            mae = torch.mean(torch.abs(predicted - batch.y))
+            total_mae += mae.item()
+
+    # Calculate training accuracy
+    avg_mae = total_mae / len(test_loader)
+
+    avg_test_loss = test_loss / len(test_loader)
+
+    print(f'Test Loss: {avg_test_loss:.4f}, MAE={avg_mae:.4f}')
