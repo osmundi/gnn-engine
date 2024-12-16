@@ -508,7 +508,7 @@ if __name__ == '__main__':
     with mlflow.start_run() as run:
         # Log hyperparameters
         mlflow.log_param("num_epochs", epochs)
-        mlflow.log_param("batch_size", batch_size)
+        #mlflow.log_param("batch_size", batch_size)
         mlflow.log_param("learning_rate", 0.001)
 
         for epoch in range(epochs):
