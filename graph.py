@@ -399,6 +399,36 @@ class FENDataset(Dataset):
         return graph
 
 
+class FENDatasetPreLoaded(InMemoryDataset):
+    """FENDataset for preprocessed graphs"""
+
+    def __init__(self, root, fen_file, edges, transform=None, pre_transform=None):
+        self.fen_file = fen_file
+        self.edges = edges
+        super().__init__(root, transform, pre_transform)
+        self.data, self.slices = torch.load(self.processed_paths[0])
+
+    @property
+    def processed_file_names(self):
+        return ['data.pt']
+
+    def process(self):
+        # Read the FEN file and preprocess the data
+        with open(self.fen_file, 'r') as f:
+            fen_list = [line.strip() for line in f]
+
+        data_list = []
+        for fen_str in fen_list:
+            fen_parser, evaluation = parse_chess_data(fen_str)
+            graph = create_graph_from_fen(fen_parser, self.edges)
+            graph.y = normalize_evaluation(evaluation)
+            data_list.append(graph)
+
+        # Save preprocessed data
+        data, slices = self.collate(data_list)
+        torch.save((data, slices), self.processed_paths[0])
+
+
 # Custom Message Passing Layer
 class CustomMessagePassing(MessagePassing):
     def __init__(self, in_channels, out_channels, aggr='add'):
