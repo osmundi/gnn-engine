@@ -1,10 +1,11 @@
+import sys
 import os
 import torch.optim as optim
 from torch.utils.data import random_split
 from torch_geometric.data import DataLoader
 from torch_geometric.utils import softmax
 from torch_geometric.nn import MessagePassing
-from torch_geometric.nn import GCNConv
+from torch_geometric.nn import GCNConv, GATConv, global_mean_pool, global_add_pool
 import torch.nn.functional as F
 import torch.nn as nn
 import gc
@@ -16,6 +17,7 @@ from torch_geometric.data import Data
 from functools import partial
 import torch
 import numpy as np
+import pandas as pd
 import mlflow
 import mlflow.pytorch
 
@@ -144,7 +146,7 @@ def calculate_inverse_output(input_value: str) -> int:
 
 
 # there are evaluations in the range 1000 - 9999 which are unnecessary big -> might be good idea to normalize them
-def normalize_evaluation(evaluation: int) -> float:
+def normalize_log_evaluation(evaluation: int) -> float:
     """
     For centipawn evaluations, signed log transformation is often a good choice because:
 
@@ -161,8 +163,37 @@ def normalize_evaluation(evaluation: int) -> float:
     data = torch.tensor([evaluation], dtype=torch.float)
     return torch.sign(data) * torch.log(torch.abs(data) + 1)
 
+def normalize_evaluation(evaluation: int) -> float:
+    evaluations = all_evaluations
+
+    # Compute median and IQR
+    median = torch.median(evaluations)
+    q1 = torch.quantile(evaluations, 0.25)
+    q3 = torch.quantile(evaluations, 0.75)
+    iqr = q3 - q1
+
+    # Robust scaling
+    robust_scaled_evaluations = (evaluation - median) / iqr
+
+    # Optionally, scale robust outputs to [-1, 1] by dividing further
+    return torch.tanh(robust_scaled_evaluations)  # Limits to [-1, 1]
 
 def denormalize_evaluation(normalized_data: float) -> float:
+    evaluations = all_evaluations
+
+    # Compute median and IQR
+    median = torch.median(evaluations)
+    q1 = torch.quantile(evaluations, 0.25)
+    q3 = torch.quantile(evaluations, 0.75)
+    iqr = q3 - q1
+
+    evaluation = torch.atanh(normalized_data)  # Inverse of tanh
+
+    # Robust scaling
+    return (evaluation * iqr + median)
+
+
+def denormalize_log_evaluation(normalized_data: float) -> float:
     return np.sign(normalized_data) * (np.expm1(np.abs(normalized_data)))
 
 
@@ -230,7 +261,7 @@ def alphabetical_distance(char1, char2):
 def fen_to_edge_features(fen_parser, edges):
 
     # initialize edge feature tensor
-    edge_features = torch.zeros((edges.size(1), 17))
+    edge_features = torch.zeros((edges.size(1), 15))
 
     white_to_move = fen_parser.white_to_move()
 
@@ -275,52 +306,53 @@ def fen_to_edge_features(fen_parser, edges):
         # legal move
         edge_features[edge][0] = 1
 
-        # edge length
-        edge_features[edge][1] = abs(int(move[1]) - int(move[3]))
-        edge_features[edge][2] = alphabetical_distance(move[0], move[2])
 
-        # what piece is moved
+        # what piece could move between two nodes
         if pieces[start].piece_type == 1:
             # pawn
+            if white_to_move:
+                edge_features[edge][1] = 1
+            else:
+                edge_features[edge][2] = 1
+        elif pieces[start].piece_type == 6:
+            # king
             if white_to_move:
                 edge_features[edge][3] = 1
             else:
                 edge_features[edge][4] = 1
-        elif pieces[start].piece_type == 6:
-            # king
-            if white_to_move:
-                edge_features[edge][5] = 1
-            else:
-                edge_features[edge][6] = 1
         elif pieces[start].piece_type == 5:
             # queen
-            edge_features[edge][7] = 1
+            edge_features[edge][5] = 1
         elif pieces[start].piece_type == 2:
             # knight
-            edge_features[edge][8] = 1
+            edge_features[edge][6] = 1
         elif pieces[start].piece_type == 3:
             # bishop
-            edge_features[edge][9] = 1
+            edge_features[edge][7] = 1
         elif pieces[start].piece_type == 4:
             # rook
-            edge_features[edge][10] = 1
+            edge_features[edge][8] = 1
         else:
             assert False, f"Did not recognize piece symbol: {pieces[start].piece_type}"
 
         # castling
         if move == "e1g1" and fen_parser.can_castle('w', 'k'):
-            edge_features[edge][12] = 1
+            edge_features[edge][10] = 1
         if move == "e1c1" and fen_parser.can_castle('w', 'q'):
-            edge_features[edge][13] = 1
+            edge_features[edge][11] = 1
         if move == "e8g8" and fen_parser.can_castle('b', 'k'):
-            edge_features[edge][14] = 1
+            edge_features[edge][12] = 1
         if move == "e8c8" and fen_parser.can_castle('b', 'q'):
-            edge_features[edge][15] = 1
+            edge_features[edge][13] = 1
 
         # pawn promotion
         if promote:
-            edge_features[edge][16] = 1
+            edge_features[edge][14] = 1
             promote = False
+
+        # edge length
+        #edge_features[edge][15] = abs(int(move[1]) - int(move[3]))
+        #edge_features[edge][16] = alphabetical_distance(move[0], move[2])
 
         # print(edge_features[edge])
 
@@ -344,17 +376,25 @@ class FENDataset(Dataset):
             self.fen_list = [line.strip() for line in f]
 
         self.edges = create_edges()
+        self.cache = {}
 
     def len(self):
         return len(self.fen_list)
 
     def get(self, idx):
+
+        if idx in self.cache:
+            return self.cache[idx]
+
         fen_str = self.fen_list[idx]
         fen_parser, evaluation = parse_chess_data(fen_str)
         graph = create_graph_from_fen(fen_parser, self.edges)
 
         # store the evaluation
+        #graph.y = torch.tensor(evaluation, dtype=torch.float)
         graph.y = normalize_evaluation(evaluation)
+
+        self.cache[idx] = graph
 
         return graph
 
@@ -364,7 +404,7 @@ class CustomMessagePassing(MessagePassing):
     def __init__(self, in_channels, out_channels, aggr='add'):
         super(CustomMessagePassing, self).__init__(aggr=aggr)
         self.linear = nn.Linear(in_channels, out_channels)
-        self.edge_encoder = nn.Linear(17, out_channels)
+        self.edge_encoder = nn.Linear(15, out_channels)
 
     def forward(self, x, edge_index, edge_attr=None):
         return self.propagate(edge_index, x=x, edge_attr=edge_attr)
@@ -389,18 +429,15 @@ class AttentionGlobalPooling(nn.Module):
             nn.Linear(hidden_channels, 1)
         )
 
-    def forward(self, x):
-        # Compute attention scores
-        attention_scores = self.attention_mlp(x)  # [num_nodes, 1]
-        # Normalize across all nodes
-        attention_scores = F.softmax(attention_scores, dim=0)
+    def forward(self, x, batch):
+        attention_scores = self.attention_mlp(x).squeeze(-1)  # Shape: [num_nodes_in_batch]
+        attention_scores = softmax(attention_scores, batch)  # Softmax per graph
 
-        # Apply attention scores to node features
-        x_weighted = x * attention_scores  # Element-wise multiplication
+        # Step 2: Weight node features by attention scores
+        weighted_x = x * attention_scores.view(-1, 1)  # Shape: [num_nodes_in_batch, in_channels]
 
-        # Aggregate node features (sum)
-        graph_embedding = x_weighted.sum(dim=0)  # [in_channels]
-        return graph_embedding
+        # Step 3: Aggregate weighted node features per graph using global_add_pool
+        return global_add_pool(weighted_x, batch)  # Shape: [num_graphs_in_batch, in_channels]
 
 
 # EPD GNN Architecture for a Single Graph
@@ -430,7 +467,9 @@ class AttentionEPDGNN(nn.Module):
             nn.Linear(hidden_channels // 2, out_channels)
         )
 
-    def forward(self, x, edge_index, edge_attr=None):
+    def forward(self, data):
+        x, edge_index, edge_attr, batch = data.x, data.edge_index, data.edge_attr, data.batch
+
         # Encoder: Transform node features
         x = self.encoder(x)
         x = F.relu(x)
@@ -441,19 +480,85 @@ class AttentionEPDGNN(nn.Module):
             x = F.relu(x)
 
         # Attention-based pooling
-        graph_embedding = self.attention_pooling(x)
+        graph_embedding = self.attention_pooling(x, batch)
 
         # Decoder: Predict graph-level output
         out = self.decoder(graph_embedding)
         return out
 
 
-if __name__ == '__main__':
+class GNNModel(torch.nn.Module):
+    def __init__(self, num_features=13, hidden_size=64, target_size=1):
+        super(GNNModel, self).__init__()
+        self.num_features = num_features
+        self.hidden_size = hidden_size
+        self.target_size = target_size
+        self.convs = [GATConv(self.num_features, self.hidden_size, edge_dim = 15).to('cuda'),
+                      GATConv(self.hidden_size, self.hidden_size, edge_dim = 15).to('cuda')]
+        self.linear = nn.Linear(self.hidden_size, self.target_size)
+
+    def forward(self, data):
+        x, edge_index, edge_attr, batch = data.x, data.edge_index, data.edge_attr, data.batch
+
+        for conv in self.convs[:-1]:
+            x = conv(x=x, edge_index=edge_index, edge_attr=edge_attr) # adding edge features here!
+            x = F.relu(x)
+            x = F.dropout(x, training=self.training)
+        x = self.convs[-1](x=x, edge_index=edge_index, edge_attr=edge_attr) # edge features here as well
+
+        # Global mean pooling: aggregate node features to get a graph-level embedding
+        x = global_mean_pool(x, batch)  # 'batch' tensor tells which nodes belong to which graph
+
+        x = self.linear(x)
+        return torch.tanh(x)
+
+
+def infer(fen, cp):
+
+    print(f"Evaluate position: {fen}")
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    # Hyperparameters
+    in_channels = 13
+    hidden_channels = 64
+    num_iterations = 3
+
+    # Model
+    model = AttentionEPDGNN(
+        in_channels=in_channels,
+        hidden_channels=hidden_channels,
+        out_channels=1
+    )
+
+    model.to(device)
+
+    # Load the model weights
+    checkpoint = torch.load(cp)
+    model.load_state_dict(checkpoint['model_state_dict'])
+
+    # Set the model to evaluation mode
+    model.eval()
+
+    fen_parser, _ = parse_chess_data(fen)
+    edges = create_edges()
+    graph = create_graph_from_fen(fen_parser, edges)
+
+    # NOTE: this is just a placeholder (which model assumes to be there)
+    batch = torch.zeros(64, dtype=torch.long)
+    graph.batch = batch
+    graph = graph.to(device)
+
+    with torch.no_grad():
+        evaluation = model(graph)
+        evaluation = torch.tensor(evaluation.item(), dtype=torch.float)
+        return denormalize_evaluation(evaluation)
+
+
+def train(data):
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    # dataset = FENDataset('chessData.csv')
-    dataset = FENDataset('first_100k_evaluations.csv').to(device)
+    dataset = FENDataset(data)
 
     # Separate data to training, validation and testing sets
     # Define lengths for train, validation, and test
@@ -465,17 +570,21 @@ if __name__ == '__main__':
     train_dataset, val_dataset, test_dataset = random_split(
         dataset, [train_len, val_len, test_len])
 
+    batch_size = 32
+
     # Create DataLoaders for each split
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
-    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False, num_workers=8, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=8, pin_memory=True)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
     # Training loop
 
     # Hyperparameters
     in_channels = 13   # Features per node
     hidden_channels = 64
-    num_iterations = 3
+    num_iterations = 3 # message passing rounds
+
+    lr = 0.001
 
     # Model
     model = AttentionEPDGNN(
@@ -483,21 +592,23 @@ if __name__ == '__main__':
         hidden_channels=hidden_channels,
         out_channels=1
     )
-
-    # Optimizer
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
-
-    # Mean Squared Error for regression (centipawn evaluation)
-    criterion = torch.nn.MSELoss()
+    #model = GNNModel()
 
     # Move model to GPU if available
     model.to(device)
 
-    # Training loop
-    epochs = 2  # Number of epochs to train for
+    # Optimizer
+    optimizer = optim.Adam(model.parameters(), lr=lr)
+
+    # Mean Squared Error for regression (centipawn evaluation)
+    criterion = torch.nn.MSELoss()
+
+    # Number of epochs to train for
+    epochs = 200
 
     # Set remote MLflow tracking URI
     tracking_url = os.environ['TRACKING_URL']
+    #tracking_url = False
 
     if tracking_url:
         mlflow.set_tracking_uri(tracking_url)
@@ -507,65 +618,65 @@ if __name__ == '__main__':
 
     with mlflow.start_run() as run:
         # Log hyperparameters
-        mlflow.log_param("num_epochs", epochs)
-        #mlflow.log_param("batch_size", batch_size)
-        mlflow.log_param("learning_rate", 0.001)
+        if tracking_url:
+            mlflow.log_param("num_epochs", epochs)
+            mlflow.log_param("batch_size", batch_size)
+            mlflow.log_param("learning_rate", lr)
 
+        # Training loop
         for epoch in range(epochs):
-            print(f"Epoch: {epoch}")
             model.train()  # Set model to training mode
             train_loss = 0.0
             total_mae = 0
 
-            for batch in train_loader:
-                batch = batch.to(device)  # Move batch to device (GPU or CPU)
+            for batch_id, batch in enumerate(train_loader):
+                # Move batch to device (GPU or CPU)
+                batch = batch.to(device)  
 
                 # Zero gradients
                 optimizer.zero_grad()
 
                 # Forward pass: Get model predictions
-                output = model(batch.x, batch.edge_index,
-                               edge_attr=batch.edge_attr)
+                output = model(batch)
 
-                # Calculate the loss
-                # Assuming batch.y contains the labels
-                loss = criterion(output, batch.y)
-                # loss = criterion(output.squeeze(), batch.y)  # Compute loss
+                # Calculate the loss, assuming batch.y contains the evaluations
+                #loss = criterion(output, batch.y)
+                loss = criterion(output, batch.y.view(-1, 1))
 
-                loss.backward()  # Backpropagation
-                optimizer.step()  # Optimizer step
+                # Backpropagation
+                loss.backward()  
+
+                optimizer.step()
 
                 # Track loss
                 train_loss += loss.item()
-                predicted = output.squeeze()
 
-                # Track MAE
-                mae = torch.mean(torch.abs(predicted - batch.y))
-                total_mae += mae.item()
-
-            # Calculate MAE
-            avg_mae = total_mae / len(train_loader)
+                # debugging model outputs
+                #if batch_id % 100 == 0:
+                    #print("-----")
+                    #print(output)
+                    #print(predicted)
+                    #print(batch.y)
+                    #print("-----")
 
             # Calculate average training loss and accuracy
             avg_train_loss = train_loss / len(train_loader)
 
-            print(
-                f'Epoch {epoch+1}/{epochs}, Loss: {avg_train_loss:.4f}, MAE={avg_mae:.4f}')
+            print(f'Epoch {epoch+1}/{epochs}, Loss: {avg_train_loss:.4f}')
 
             if tracking_url:
                 # Log metrics
                 mlflow.log_metric("train_loss", avg_train_loss, step=epoch)
 
-            checkpoint = 'AttentionEPDGNN_checkpoint_{:03d}.pt'.format(epoch+1)
-
-            torch.save({
-                'epoch': epoch + 1,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'loss': avg_train_loss,
-            }, checkpoint)
-
-            print(f"Checkpoint saved to: {checkpoint}")
+            if epoch % 10 == 0:
+                checkpoint = 'checkpoints/500k/AttentionEPDGNN_checkpoint_{:03d}.pt'.format(epoch+1)
+                torch.save({
+                    'epoch': epoch + 1,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'loss': avg_train_loss,
+                }, checkpoint)
+                print(f"Checkpoint saved to: {checkpoint}")
 
             # Validation step (no gradients needed)
             model.eval()  # Set model to evaluation mode
@@ -575,24 +686,19 @@ if __name__ == '__main__':
                 for batch in val_loader:
                     batch = batch.to(device)
 
-                    output = model(batch.x, batch.edge_index,
-                                   edge_attr=batch.edge_attr)
-                    loss = criterion(output, batch.y)
+                    output = model(batch)
+
+                    #loss = criterion(output, batch.y)
+                    loss = criterion(output, batch.y.view(-1, 1))
                     val_loss += loss.item()
-
-                    predicted = output.squeeze()
-
-                    # MAE calculation
-                    mae = torch.mean(torch.abs(predicted - batch.y))
-                    total_mae += mae.item()
-
-            # Calculate training accuracy
-            avg_mae = total_mae / len(val_loader)
 
             avg_val_loss = val_loss / len(val_loader)
 
-            print(
-                f'Validation Loss: {avg_val_loss:.4f}, MAE={avg_mae:.4f}')
+            if tracking_url:
+                # Log metrics
+                mlflow.log_metric("validation_loss", avg_val_loss, step=epoch)
+
+            print(f'Validation Loss: {avg_val_loss:.4f}')
 
     # Save the model and log it to the MLflow server
     # mlflow.log_artifact('AttentionEPDGNN_checkpoint.pt')
@@ -606,20 +712,88 @@ if __name__ == '__main__':
     with torch.no_grad():
         for batch in test_loader:
             batch = batch.to(device)
-
-            output = model(batch.x, batch.edge_index, batch.edge_attr)
-            loss = criterion(output, batch.y)
+            output = model(batch)
+            loss = criterion(output, batch.y.view(-1, 1))
             test_loss += loss.item()
 
-            predicted = output.squeeze()
-
             # MAE calculation
-            mae = torch.mean(torch.abs(predicted - batch.y))
-            total_mae += mae.item()
+            #predicted = output.squeeze()
+            #mae = torch.mean(torch.abs(predicted - batch.y))
+            #total_mae += mae.item()
 
     # Calculate training accuracy
-    avg_mae = total_mae / len(test_loader)
+    #avg_mae = total_mae / len(test_loader)
 
     avg_test_loss = test_loss / len(test_loader)
 
-    print(f'Test Loss: {avg_test_loss:.4f}, MAE={avg_mae:.4f}')
+    print(f'Test Loss: {avg_test_loss:.4f}')
+
+
+def play():
+    """play a game of chess against computer"""
+
+    fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w - - 0 0"
+    board = chess.Board(fen)
+
+    while True:
+
+        print(fen)
+
+        best_eval = None
+        best_move = None
+
+        for move in board.legal_moves:
+            board.push(move)
+            cur_eval = infer(f"{board.fen()},0", 'checkpoints/500k/AttentionEPDGNN_checkpoint_491.pt')
+
+            if not best_eval:
+                best_eval = cur_eval
+                best_move = move
+            elif fen.split()[1] == 'w':
+                # white to move -> bigger the better
+                if best_eval < cur_eval:
+                    best_eval = cur_eval
+                    best_move = move
+            elif fen.split()[1] == 'b':
+                # black to move 
+                if best_eval > cur_eval:
+                    best_eval = cur_eval
+                    best_move = move
+
+            board.set_fen(fen)
+        
+        print(f"Computer move: {best_move} (eval: {best_eval})")
+        board.push(best_move)
+        print("Your move:")
+        human_move = input()
+        human_move = chess.Move.from_uci(human_move)
+
+        if human_move in board.legal_moves:
+            board.push(human_move)
+        else:
+            print("Try again:")
+            human_move = input()
+            board.push(human_move)
+
+        fen = board.fen()
+
+
+
+if __name__ == '__main__':
+    # Normalize evaluations
+    chess_data = "first_500k_evaluations.csv"
+    data = pd.read_csv(chess_data, header=None, names=["fen", "evaluation"])
+
+    # Assuming "evaluation" is the second column after splitting
+    data['evaluation'] = data['evaluation'].apply(
+        lambda x: 1000 if '#+' in x else (-1000 if '#-' in x else int(x.strip()))
+    )
+
+    # Convert evaluations to a PyTorch tensor
+    global all_evaluations
+    all_evaluations = torch.tensor(data['evaluation'].values, dtype=torch.float)
+
+    # train
+    # train(chess_data)
+
+    play()
