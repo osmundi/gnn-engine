@@ -258,6 +258,10 @@ def win_rate_model(eval_score, position):
     return win_rate
 
 
+def win_rate_to_bin(rate, bins=128):
+    return int(rate * bins)
+
+
 def parse_evaluation(evaluation: str) -> int:
     # in centipawns
     evaluation = evaluation.strip()
@@ -899,19 +903,27 @@ if __name__ == '__main__':
     position = {'PAWN': 8, 'KNIGHT': 2, 'BISHOP': 2, 'ROOK': 2, 'QUEEN': 0}
     eval_score = 75
     win_rate = win_rate_model(eval_score, position)
-    print(f"Evalution: {eval_score}\nWin rate: {win_rate * 100} per cent\n-----")
+    print(f"Evalution: {eval_score}\nWin rate: {win_rate * 100} per cent\n")
+    print(f"Bin: {win_rate_to_bin(win_rate)}")
+    print("------")
 
     position = {'PAWN': 8, 'KNIGHT': 2, 'BISHOP': 2, 'ROOK': 2, 'QUEEN': 0}
     eval_score = 85
     win_rate = win_rate_model(eval_score, position)
-    print(f"Evalution: {eval_score}\nWin rate: {win_rate * 100} per cent\n-----")
+    print(f"Evalution: {eval_score}\nWin rate: {win_rate * 100} per cent\n")
+    print(f"Bin: {win_rate_to_bin(win_rate)}")
+    print("------")
 
     position = {'PAWN': 8, 'KNIGHT': 2, 'BISHOP': 2, 'ROOK': 2, 'QUEEN': 0}
     eval_score = 95
     win_rate = win_rate_model(eval_score, position)
-    print(f"Evalution: {eval_score}\nWin rate: {win_rate * 100} per cent\n-----")
-
+    print(f"Evalution: {eval_score}\nWin rate: {win_rate * 100} per cent\n")
+    print(f"Bin: {win_rate_to_bin(win_rate)}")
+    print("------")
+    
     position = {'PAWN': 8, 'KNIGHT': 2, 'BISHOP': 2, 'ROOK': 2, 'QUEEN': 0}
     eval_score = 110
     win_rate = win_rate_model(eval_score, position)
-    print(f"Evalution: {eval_score}\nWin rate: {win_rate * 100} per cent\n-----")
+    print(f"Evalution: {eval_score}\nWin rate: {win_rate * 100} per cent\n")
+    print(f"Bin: {win_rate_to_bin(win_rate)}")
+    print("------")
