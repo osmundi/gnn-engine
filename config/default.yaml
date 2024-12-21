@@ -1,0 +1,9 @@
+
+training:
+  data: first_10k_evaluations.csv
+
+model: 
+  _target_: model.AttentionEPDGNN
+  in_channels: 13
+  hidden_channels: 64
+  out_channels: 1

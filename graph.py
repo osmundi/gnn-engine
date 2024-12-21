@@ -1,23 +1,21 @@
 import sys
 import os
+import re
+from itertools import chain
+from functools import partial
+
+import hydra
+from omegaconf import DictConfig, OmegaConf
+from hydra.utils import instantiate
+import chess
+import numpy as np
+import pandas as pd
+import torch
 import torch.optim as optim
 from torch.utils.data import random_split
 from torch_geometric.data import DataLoader
-from torch_geometric.utils import softmax
-from torch_geometric.nn import MessagePassing
-from torch_geometric.nn import GCNConv, GATConv, global_mean_pool, global_add_pool
-import torch.nn.functional as F
-import torch.nn as nn
-import gc
 from torch_geometric.data import Dataset, InMemoryDataset
-import re
-from itertools import chain
-import chess
 from torch_geometric.data import Data
-from functools import partial
-import torch
-import numpy as np
-import pandas as pd
 import mlflow
 import mlflow.pytorch
 
@@ -163,6 +161,7 @@ def normalize_log_evaluation(evaluation: int) -> float:
     data = torch.tensor([evaluation], dtype=torch.float)
     return torch.sign(data) * torch.log(torch.abs(data) + 1)
 
+
 def normalize_evaluation(evaluation: int) -> float:
     evaluations = all_evaluations
 
@@ -177,6 +176,7 @@ def normalize_evaluation(evaluation: int) -> float:
 
     # Optionally, scale robust outputs to [-1, 1] by dividing further
     return torch.tanh(robust_scaled_evaluations)  # Limits to [-1, 1]
+
 
 def denormalize_evaluation(normalized_data: float) -> float:
     evaluations = all_evaluations
@@ -224,10 +224,11 @@ def win_rate_params(position):
     as_c = [-37.45051876, 121.19101539, -132.78783573, 420.70576692]
     bs_c = [90.26261072, -137.26549898, 71.10130540, 51.35259597]
 
-    a = as_c[0] * m**3 + as_c[1] * m**2 + as_c[2] * m + as_c[3];
-    b = bs_c[0] * m**3 + bs_c[1] * m**2 + bs_c[2] * m + bs_c[3];
+    a = as_c[0] * m**3 + as_c[1] * m**2 + as_c[2] * m + as_c[3]
+    b = bs_c[0] * m**3 + bs_c[1] * m**2 + bs_c[2] * m + bs_c[3]
 
     return a, b
+
 
 def win_rate_model(eval_score, position):
     """
@@ -259,6 +260,7 @@ def win_rate_model(eval_score, position):
 
 
 def win_rate_to_bin(rate, bins=128):
+    """Binning: divide winrates between [0,1] to a 128 classes"""
     return int(rate * bins)
 
 
@@ -371,7 +373,6 @@ def fen_to_edge_features(fen_parser, edges):
         # legal move
         edge_features[edge][0] = 1
 
-
         # what piece could move between two nodes
         if pieces[start].piece_type == 1:
             # pawn
@@ -416,8 +417,8 @@ def fen_to_edge_features(fen_parser, edges):
             promote = False
 
         # edge length
-        #edge_features[edge][15] = abs(int(move[1]) - int(move[3]))
-        #edge_features[edge][16] = alphabetical_distance(move[0], move[2])
+        # edge_features[edge][15] = abs(int(move[1]) - int(move[3]))
+        # edge_features[edge][16] = alphabetical_distance(move[0], move[2])
 
         # print(edge_features[edge])
 
@@ -456,7 +457,7 @@ class FENDataset(Dataset):
         graph = create_graph_from_fen(fen_parser, self.edges)
 
         # store the evaluation
-        #graph.y = torch.tensor(evaluation, dtype=torch.float)
+        # graph.y = torch.tensor(evaluation, dtype=torch.float)
         graph.y = normalize_evaluation(evaluation)
 
         self.cache[idx] = graph
@@ -492,120 +493,6 @@ class FENDatasetPreLoaded(InMemoryDataset):
         # Save preprocessed data
         data, slices = self.collate(data_list)
         torch.save((data, slices), self.processed_paths[0])
-
-
-# Custom Message Passing Layer
-class CustomMessagePassing(MessagePassing):
-    def __init__(self, in_channels, out_channels, aggr='add'):
-        super(CustomMessagePassing, self).__init__(aggr=aggr)
-        self.linear = nn.Linear(in_channels, out_channels)
-        self.edge_encoder = nn.Linear(15, out_channels)
-
-    def forward(self, x, edge_index, edge_attr=None):
-        return self.propagate(edge_index, x=x, edge_attr=edge_attr)
-
-    def message(self, x_j, edge_attr):
-        if edge_attr is not None:
-            edge_embedding = self.edge_encoder(edge_attr)
-            return self.linear(x_j) + edge_embedding
-        return self.linear(x_j)
-
-    def update(self, aggr_out):
-        return aggr_out
-
-
-# Attention-Based Global Pooling
-class AttentionGlobalPooling(nn.Module):
-    def __init__(self, in_channels, hidden_channels):
-        super(AttentionGlobalPooling, self).__init__()
-        self.attention_mlp = nn.Sequential(
-            nn.Linear(in_channels, hidden_channels),
-            nn.ReLU(),
-            nn.Linear(hidden_channels, 1)
-        )
-
-    def forward(self, x, batch):
-        attention_scores = self.attention_mlp(x).squeeze(-1)  # Shape: [num_nodes_in_batch]
-        attention_scores = softmax(attention_scores, batch)  # Softmax per graph
-
-        # Step 2: Weight node features by attention scores
-        weighted_x = x * attention_scores.view(-1, 1)  # Shape: [num_nodes_in_batch, in_channels]
-
-        # Step 3: Aggregate weighted node features per graph using global_add_pool
-        return global_add_pool(weighted_x, batch)  # Shape: [num_graphs_in_batch, in_channels]
-
-
-# EPD GNN Architecture for a Single Graph
-class AttentionEPDGNN(nn.Module):
-    def __init__(self, in_channels, hidden_channels, out_channels, num_processors=2):
-        super(AttentionEPDGNN, self).__init__()
-
-        # Encoder: Node feature transformation
-        # Raw node features (like piece type, color, position) are usually sparse or simple.
-        # The encoder learns a richer, task-specific representation in the hidden embedding space.
-        self.encoder = nn.Linear(in_channels, hidden_channels)
-
-        # Processor: Stack of message-passing layers
-        self.processors = nn.ModuleList([
-            CustomMessagePassing(hidden_channels, hidden_channels)
-            for _ in range(num_processors)
-        ])
-
-        # Attention-based global pooling
-        self.attention_pooling = AttentionGlobalPooling(
-            hidden_channels, hidden_channels // 2)
-
-        # Decoder: Fully connected layers for graph-level output
-        self.decoder = nn.Sequential(
-            nn.Linear(hidden_channels, hidden_channels // 2),
-            nn.ReLU(),
-            nn.Linear(hidden_channels // 2, out_channels)
-        )
-
-    def forward(self, data):
-        x, edge_index, edge_attr, batch = data.x, data.edge_index, data.edge_attr, data.batch
-
-        # Encoder: Transform node features
-        x = self.encoder(x)
-        x = F.relu(x)
-
-        # Processor: Message passing layers
-        for processor in self.processors:
-            x = processor(x, edge_index, edge_attr=edge_attr)
-            x = F.relu(x)
-
-        # Attention-based pooling
-        graph_embedding = self.attention_pooling(x, batch)
-
-        # Decoder: Predict graph-level output
-        out = self.decoder(graph_embedding)
-        return out
-
-
-class GNNModel(torch.nn.Module):
-    def __init__(self, num_features=13, hidden_size=64, target_size=1):
-        super(GNNModel, self).__init__()
-        self.num_features = num_features
-        self.hidden_size = hidden_size
-        self.target_size = target_size
-        self.convs = [GATConv(self.num_features, self.hidden_size, edge_dim = 15).to('cuda'),
-                      GATConv(self.hidden_size, self.hidden_size, edge_dim = 15).to('cuda')]
-        self.linear = nn.Linear(self.hidden_size, self.target_size)
-
-    def forward(self, data):
-        x, edge_index, edge_attr, batch = data.x, data.edge_index, data.edge_attr, data.batch
-
-        for conv in self.convs[:-1]:
-            x = conv(x=x, edge_index=edge_index, edge_attr=edge_attr) # adding edge features here!
-            x = F.relu(x)
-            x = F.dropout(x, training=self.training)
-        x = self.convs[-1](x=x, edge_index=edge_index, edge_attr=edge_attr) # edge features here as well
-
-        # Global mean pooling: aggregate node features to get a graph-level embedding
-        x = global_mean_pool(x, batch)  # 'batch' tensor tells which nodes belong to which graph
-
-        x = self.linear(x)
-        return torch.tanh(x)
 
 
 def infer(fen, cp):
@@ -649,11 +536,15 @@ def infer(fen, cp):
         return denormalize_evaluation(evaluation)
 
 
-def train(data):
+@hydra.main(version_base=None, config_path="config", config_name="default")
+def train(cfg: DictConfig):
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    dataset = FENDataset(data)
+    print(type(cfg))
+    print(cfg)
+
+    dataset = FENDataset(cfg.training.data)
 
     # Separate data to training, validation and testing sets
     # Define lengths for train, validation, and test
@@ -668,26 +559,27 @@ def train(data):
     batch_size = 32
 
     # Create DataLoaders for each split
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False, num_workers=8, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=8, pin_memory=True)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    train_loader = DataLoader(
+        train_dataset, batch_size=batch_size, shuffle=False, num_workers=8, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size,
+                            shuffle=False, num_workers=8, pin_memory=True)
+    test_loader = DataLoader(
+        test_dataset, batch_size=batch_size, shuffle=False)
 
     # Training loop
-
-    # Hyperparameters
-    in_channels = 13   # Features per node
-    hidden_channels = 64
-    num_iterations = 3 # message passing rounds
 
     lr = 0.001
 
     # Model
-    model = AttentionEPDGNN(
-        in_channels=in_channels,
-        hidden_channels=hidden_channels,
-        out_channels=1
-    )
-    #model = GNNModel()
+    model = instantiate(cfg.model)
+    # model = AttentionEPDGNN(
+    #     in_channels=in_channels,
+    #     hidden_channels=hidden_channels,
+    #     out_channels=1
+    # )
+    # model = GNNModel()
+
+    print(model)
 
     # Move model to GPU if available
     model.to(device)
@@ -703,7 +595,7 @@ def train(data):
 
     # Set remote MLflow tracking URI
     tracking_url = os.environ['TRACKING_URL']
-    #tracking_url = False
+    tracking_url = False
 
     if tracking_url:
         mlflow.set_tracking_uri(tracking_url)
@@ -726,7 +618,7 @@ def train(data):
 
             for batch_id, batch in enumerate(train_loader):
                 # Move batch to device (GPU or CPU)
-                batch = batch.to(device)  
+                batch = batch.to(device)
 
                 # Zero gradients
                 optimizer.zero_grad()
@@ -735,11 +627,11 @@ def train(data):
                 output = model(batch)
 
                 # Calculate the loss, assuming batch.y contains the evaluations
-                #loss = criterion(output, batch.y)
+                # loss = criterion(output, batch.y)
                 loss = criterion(output, batch.y.view(-1, 1))
 
                 # Backpropagation
-                loss.backward()  
+                loss.backward()
 
                 optimizer.step()
 
@@ -747,12 +639,12 @@ def train(data):
                 train_loss += loss.item()
 
                 # debugging model outputs
-                #if batch_id % 100 == 0:
-                    #print("-----")
-                    #print(output)
-                    #print(predicted)
-                    #print(batch.y)
-                    #print("-----")
+                # if batch_id % 100 == 0:
+                # print("-----")
+                # print(output)
+                # print(predicted)
+                # print(batch.y)
+                # print("-----")
 
             # Calculate average training loss and accuracy
             avg_train_loss = train_loss / len(train_loader)
@@ -764,7 +656,8 @@ def train(data):
                 mlflow.log_metric("train_loss", avg_train_loss, step=epoch)
 
             if epoch % 10 == 0:
-                checkpoint = 'checkpoints/500k/AttentionEPDGNN_checkpoint_{:03d}.pt'.format(epoch+1)
+                checkpoint = 'checkpoints/500k/AttentionEPDGNN_checkpoint_{:03d}.pt'.format(
+                    epoch+1)
                 torch.save({
                     'epoch': epoch + 1,
                     'model_state_dict': model.state_dict(),
@@ -783,7 +676,7 @@ def train(data):
 
                     output = model(batch)
 
-                    #loss = criterion(output, batch.y)
+                    # loss = criterion(output, batch.y)
                     loss = criterion(output, batch.y.view(-1, 1))
                     val_loss += loss.item()
 
@@ -812,12 +705,12 @@ def train(data):
             test_loss += loss.item()
 
             # MAE calculation
-            #predicted = output.squeeze()
-            #mae = torch.mean(torch.abs(predicted - batch.y))
-            #total_mae += mae.item()
+            # predicted = output.squeeze()
+            # mae = torch.mean(torch.abs(predicted - batch.y))
+            # total_mae += mae.item()
 
     # Calculate training accuracy
-    #avg_mae = total_mae / len(test_loader)
+    # avg_mae = total_mae / len(test_loader)
 
     avg_test_loss = test_loss / len(test_loader)
 
@@ -839,7 +732,8 @@ def play():
 
         for move in board.legal_moves:
             board.push(move)
-            cur_eval = infer(f"{board.fen()},0", 'checkpoints/500k/AttentionEPDGNN_checkpoint_491.pt')
+            cur_eval = infer(
+                f"{board.fen()},0", 'checkpoints/500k/AttentionEPDGNN_checkpoint_491.pt')
 
             if not best_eval:
                 best_eval = cur_eval
@@ -850,13 +744,13 @@ def play():
                     best_eval = cur_eval
                     best_move = move
             elif fen.split()[1] == 'b':
-                # black to move 
+                # black to move
                 if best_eval > cur_eval:
                     best_eval = cur_eval
                     best_move = move
 
             board.set_fen(fen)
-        
+
         print(f"Computer move: {best_move} (eval: {best_eval})")
         board.push(best_move)
         print("Your move:")
@@ -873,7 +767,6 @@ def play():
         fen = board.fen()
 
 
-
 def normalize_evalutions(chess_data):
 
     data = pd.read_csv(chess_data, header=None, names=["fen", "evaluation"])
@@ -885,20 +778,29 @@ def normalize_evalutions(chess_data):
 
     # Convert evaluations to a PyTorch tensor
     global all_evaluations
-    all_evaluations = torch.tensor(data['evaluation'].values, dtype=torch.float)
+    all_evaluations = torch.tensor(
+        data['evaluation'].values, dtype=torch.float)
+
+
+@hydra.main(version_base=None, config_path="config", config_name="default")
+def run(cfg, chess_data):
+    print(OmegaConf.to_yaml(cfg))
+
 
 if __name__ == '__main__':
 
     chess_data = "first_10k_evaluations.csv"
 
     # Normalize evaluations
-    # normalize_evalutions(chess_data)
+    normalize_evalutions(chess_data)
 
     # train
-    # train(chess_data)
+    train()
 
     # game loop
     # play()
+
+    run()
 
     position = {'PAWN': 8, 'KNIGHT': 2, 'BISHOP': 2, 'ROOK': 2, 'QUEEN': 0}
     eval_score = 75
@@ -920,7 +822,7 @@ if __name__ == '__main__':
     print(f"Evalution: {eval_score}\nWin rate: {win_rate * 100} per cent\n")
     print(f"Bin: {win_rate_to_bin(win_rate)}")
     print("------")
-    
+
     position = {'PAWN': 8, 'KNIGHT': 2, 'BISHOP': 2, 'ROOK': 2, 'QUEEN': 0}
     eval_score = 110
     win_rate = win_rate_model(eval_score, position)
