@@ -9,7 +9,7 @@ from torch_geometric.nn import GCNConv, GATConv, global_mean_pool, global_add_po
 import torch.nn.functional as F
 import torch.nn as nn
 import gc
-from torch_geometric.data import Dataset
+from torch_geometric.data import Dataset, InMemoryDataset
 import re
 from itertools import chain
 import chess
@@ -195,6 +195,67 @@ def denormalize_evaluation(normalized_data: float) -> float:
 
 def denormalize_log_evaluation(normalized_data: float) -> float:
     return np.sign(normalized_data) * (np.expm1(np.abs(normalized_data)))
+
+
+def win_rate_params(position):
+    """
+    Calculate win rate parameters based on a position.
+
+    Parameters:
+        position (dict): A dictionary containing counts of pieces.
+            Expected keys: 'PAWN', 'KNIGHT', 'BISHOP', 'ROOK', 'QUEEN'.
+
+    Returns:
+        tuple: A tuple (a, b) representing win rate parameters.
+    """
+    # Calculate material count
+    material = (
+        position.get('PAWN', 0)
+        + 3 * position.get('KNIGHT', 0)
+        + 3 * position.get('BISHOP', 0)
+        + 5 * position.get('ROOK', 0)
+        + 9 * position.get('QUEEN', 0)
+    )
+
+    # Clamp material count and normalize
+    m = np.clip(material, 17, 78) / 58.0
+
+    # Coefficients for the polynomial model
+    as_c = [-37.45051876, 121.19101539, -132.78783573, 420.70576692]
+    bs_c = [90.26261072, -137.26549898, 71.10130540, 51.35259597]
+
+    a = as_c[0] * m**3 + as_c[1] * m**2 + as_c[2] * m + as_c[3];
+    b = bs_c[0] * m**3 + bs_c[1] * m**2 + bs_c[2] * m + bs_c[3];
+
+    return a, b
+
+def win_rate_model(eval_score, position):
+    """
+    Calculate the win rate model based on the evaluation and position.
+
+    Translated from stockfish c++ code:
+    https://github.com/official-stockfish/Stockfish/blob/cf10644d6e2592e663e48b3d41dae07e7294166e/src/uci.cpp#L527
+
+    Win rate probabilities as a function of evalution:
+    https://user-images.githubusercontent.com/4202567/206894542-a5039063-09ff-4f4d-9bad-6e850588cac9.png
+
+    Parameters:
+        eval_score (float): The evaluation score.
+        position (dict): A dictionary containing counts of pieces.
+            Expected keys: 'PAWN', 'KNIGHT', 'BISHOP', 'ROOK', 'QUEEN'.
+
+    Returns:
+        float: Win rate between [0, 1]
+    """
+    a, b = win_rate_params(position)
+
+    # Normalize eval_score
+    v = a * eval_score / 100
+
+    # Calculate win rate using the logistic model
+    win_rate = 1 / (1 + np.exp((a - v) / b))
+
+    return win_rate
 
 
 def parse_evaluation(evaluation: str) -> int:
@@ -809,9 +870,8 @@ def play():
 
 
 
-if __name__ == '__main__':
-    # Normalize evaluations
-    chess_data = "first_500k_evaluations.csv"
+def normalize_evalutions(chess_data):
+
     data = pd.read_csv(chess_data, header=None, names=["fen", "evaluation"])
 
     # Assuming "evaluation" is the second column after splitting
@@ -823,7 +883,35 @@ if __name__ == '__main__':
     global all_evaluations
     all_evaluations = torch.tensor(data['evaluation'].values, dtype=torch.float)
 
+if __name__ == '__main__':
+
+    chess_data = "first_10k_evaluations.csv"
+
+    # Normalize evaluations
+    # normalize_evalutions(chess_data)
+
     # train
     # train(chess_data)
 
-    play()
+    # game loop
+    # play()
+
+    position = {'PAWN': 8, 'KNIGHT': 2, 'BISHOP': 2, 'ROOK': 2, 'QUEEN': 0}
+    eval_score = 75
+    win_rate = win_rate_model(eval_score, position)
+    print(f"Evalution: {eval_score}\nWin rate: {win_rate * 100} per cent\n-----")
+
+    position = {'PAWN': 8, 'KNIGHT': 2, 'BISHOP': 2, 'ROOK': 2, 'QUEEN': 0}
+    eval_score = 85
+    win_rate = win_rate_model(eval_score, position)
+    print(f"Evalution: {eval_score}\nWin rate: {win_rate * 100} per cent\n-----")
+
+    position = {'PAWN': 8, 'KNIGHT': 2, 'BISHOP': 2, 'ROOK': 2, 'QUEEN': 0}
+    eval_score = 95
+    win_rate = win_rate_model(eval_score, position)
+    print(f"Evalution: {eval_score}\nWin rate: {win_rate * 100} per cent\n-----")
+
+    position = {'PAWN': 8, 'KNIGHT': 2, 'BISHOP': 2, 'ROOK': 2, 'QUEEN': 0}
+    eval_score = 110
+    win_rate = win_rate_model(eval_score, position)
+    print(f"Evalution: {eval_score}\nWin rate: {win_rate * 100} per cent\n-----")
