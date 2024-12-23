@@ -1,35 +1,35 @@
 import sys
 import os
-import re
-from itertools import chain
 from functools import partial
 
 import hydra
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 from hydra.utils import instantiate
 import chess
-import numpy as np
 import pandas as pd
 import torch
 import torch.optim as optim
 from torch.utils.data import random_split
 from torch_geometric.data import DataLoader
-from torch_geometric.data import Dataset, InMemoryDataset
+from torch_geometric.data import Dataset
 from torch_geometric.data import Data
 import mlflow
 import mlflow.pytorch
+from tqdm import tqdm
 
-
-# Map square to (row, col) and vice versa
-def square_to_coords(square):
-    return square // 8, square % 8
-
-
-def coords_to_square(row, col):
-    return row * 8 + col
+from dataset import FensOnDisk, create_split_dict
+from util import *
+from fen_parser import FenParser
 
 
 def create_edges() -> torch.Tensor:
+
+    # Map square to (row, col) and vice versa
+    def coords_to_square(row, col):
+        return row * 8 + col
+
+    def square_to_coords(square):
+        return square // 8, square % 8
 
     edge_index = []
 
@@ -68,202 +68,6 @@ def create_edges() -> torch.Tensor:
     return torch.tensor(edge_index, dtype=torch.long).t().contiguous()
 
 
-class FenParser():
-    def __init__(self, fen_str):
-        self.fen_str = fen_str
-
-    def parse(self):
-        ranks = self.fen_str.split(" ")[0].split("/")
-        pieces_on_all_ranks = [self.parse_rank(rank) for rank in ranks]
-        return pieces_on_all_ranks
-
-    def parse_rank(self, rank):
-        rank_re = re.compile("(\\d|[kqbnrpKQBNRP])")
-        piece_tokens = rank_re.findall(rank)
-        pieces = self.flatten(map(self.expand_or_noop, piece_tokens))
-        return pieces
-
-    def flatten(self, lst):
-        return list(chain(*lst))
-
-    def expand_or_noop(self, piece_str):
-        piece_re = re.compile("([kqbnrpKQBNRP])")
-        retval = ""
-        if piece_re.match(piece_str):
-            retval = piece_str
-        else:
-            retval = self.expand(piece_str)
-
-        return retval
-
-    def expand(self, num_str):
-        return int(num_str)*" "
-
-    def white_to_move(self):
-        return True if self.fen_str.split()[1] == 'w' else False
-
-    def can_castle(self, color, side):
-        castling_rights = self.fen_str.split()[2]
-
-        if castling_rights == '-':
-            return False
-
-        if color == 'w':
-            if side == 'k':
-                return True if 'K' in castling_rights else False
-            elif side == 'q':
-                return True if 'Q' in castling_rights else False
-
-        if color == 'b':
-            if side == 'k':
-                return True if 'k' in castling_rights else False
-            elif side == 'q':
-                return True if 'q' in castling_rights else False
-
-        return False
-
-    def get_board(self):
-        return chess.Board(self.fen_str)
-
-    def legal_moves(self):
-        return self.get_board().legal_moves
-
-
-def calculate_inverse_output(input_value: str) -> int:
-    """
-    Define the range of the output values checkmate in 100 moves is equivalent 
-    to +10 evaluation and mate in 1 move is equivalent to +75 evaluation
-    """
-    max_output = 99_000
-    min_output = 1_000
-
-    # Calculate the output using an inverse proportional formula
-    output = max_output - (input_value * (max_output - min_output) / 99)
-    # Clamp output within range
-    return int(max(min_output, min(max_output, output)))
-
-
-# there are evaluations in the range 1000 - 9999 which are unnecessary big -> might be good idea to normalize them
-def normalize_log_evaluation(evaluation: int) -> float:
-    """
-    For centipawn evaluations, signed log transformation is often a good choice because:
-
-    It compresses large values.
-    It keeps smaller values distinguishable.
-    It ensures a smooth distribution of data for regression.
-
-    Why Normalize?
-
-    1. Gradient Stability: Large differences in target values can lead to large gradients during backpropagation, which may destabilize training or cause slower convergence.
-    2. Model Sensitivity: If the majority of your data lies in the 0–100 range but you also have outliers in the 1000–9999 range, the model might overfit or focus disproportionately on these outliers.
-    3. Consistency: Normalizing the data ensures all values are on a similar scale, making the model's predictions more interpretable.
-    """
-    data = torch.tensor([evaluation], dtype=torch.float)
-    return torch.sign(data) * torch.log(torch.abs(data) + 1)
-
-
-def normalize_evaluation(evaluation: int) -> float:
-    evaluations = all_evaluations
-
-    # Compute median and IQR
-    median = torch.median(evaluations)
-    q1 = torch.quantile(evaluations, 0.25)
-    q3 = torch.quantile(evaluations, 0.75)
-    iqr = q3 - q1
-
-    # Robust scaling
-    robust_scaled_evaluations = (evaluation - median) / iqr
-
-    # Optionally, scale robust outputs to [-1, 1] by dividing further
-    return torch.tanh(robust_scaled_evaluations)  # Limits to [-1, 1]
-
-
-def denormalize_evaluation(normalized_data: float) -> float:
-    evaluations = all_evaluations
-
-    # Compute median and IQR
-    median = torch.median(evaluations)
-    q1 = torch.quantile(evaluations, 0.25)
-    q3 = torch.quantile(evaluations, 0.75)
-    iqr = q3 - q1
-
-    evaluation = torch.atanh(normalized_data)  # Inverse of tanh
-
-    # Robust scaling
-    return (evaluation * iqr + median)
-
-
-def denormalize_log_evaluation(normalized_data: float) -> float:
-    return np.sign(normalized_data) * (np.expm1(np.abs(normalized_data)))
-
-
-def win_rate_params(position):
-    """
-    Calculate win rate parameters based on a position.
-
-    Parameters:
-        position (dict): A dictionary containing counts of pieces.
-            Expected keys: 'PAWN', 'KNIGHT', 'BISHOP', 'ROOK', 'QUEEN'.
-
-    Returns:
-        tuple: A tuple (a, b) representing win rate parameters.
-    """
-    # Calculate material count
-    material = (
-        position.get('PAWN', 0)
-        + 3 * position.get('KNIGHT', 0)
-        + 3 * position.get('BISHOP', 0)
-        + 5 * position.get('ROOK', 0)
-        + 9 * position.get('QUEEN', 0)
-    )
-
-    # Clamp material count and normalize
-    m = np.clip(material, 17, 78) / 58.0
-
-    # Coefficients for the polynomial model
-    as_c = [-37.45051876, 121.19101539, -132.78783573, 420.70576692]
-    bs_c = [90.26261072, -137.26549898, 71.10130540, 51.35259597]
-
-    a = as_c[0] * m**3 + as_c[1] * m**2 + as_c[2] * m + as_c[3]
-    b = bs_c[0] * m**3 + bs_c[1] * m**2 + bs_c[2] * m + bs_c[3]
-
-    return a, b
-
-
-def win_rate_model(eval_score, position):
-    """
-    Calculate the win rate model based on the evaluation and position.
-
-    Translated from stockfish c++ code:
-    https://github.com/official-stockfish/Stockfish/blob/cf10644d6e2592e663e48b3d41dae07e7294166e/src/uci.cpp#L527
-
-    Win rate probabilities as a function of evalution:
-    https://user-images.githubusercontent.com/4202567/206894542-a5039063-09ff-4f4d-9bad-6e850588cac9.png
-
-    Parameters:
-        eval_score (float): The evaluation score.
-        position (dict): A dictionary containing counts of pieces.
-            Expected keys: 'PAWN', 'KNIGHT', 'BISHOP', 'ROOK', 'QUEEN'.
-
-    Returns:
-        float: Win rate between [0, 1]
-    """
-    a, b = win_rate_params(position)
-
-    # Normalize eval_score
-    v = a * eval_score / 100
-
-    # Calculate win rate using the logistic model
-    win_rate = 1 / (1 + np.exp((a - v) / b))
-
-    return win_rate
-
-
-def win_rate_to_bin(rate, bins=128):
-    """Binning: divide winrates between [0,1] to a 128 classes"""
-    return int(rate * bins)
-
-
 def parse_evaluation(evaluation: str) -> int:
     # in centipawns
     evaluation = evaluation.strip()
@@ -289,32 +93,20 @@ def parse_evaluation(evaluation: str) -> int:
     return int(evaluation)
 
 
-def parse_chess_data(chess_data: str) -> list:
-    fen, evaluation = chess_data.split(',')
-    return FenParser(fen), parse_evaluation(evaluation)
-
-
-# node features: these represent the pieces on the squares (nodes)
-def piece_to_tensor(piece: str) -> torch.tensor:
-    piece = chess.Piece.from_symbol(piece)
-    node_feature = torch.zeros(13)
-    node_feature[piece.__hash__() + 1] = 1
-    return node_feature
-
-
-def fen_to_node_features(fen):
+def fen_to_node_features(fen_parser):
     num_nodes = 64
     node_features = torch.zeros((num_nodes, 13))
 
-    for i, row in enumerate(list(reversed(fen.parse()))):
+    for i, row in enumerate(list(reversed(fen_parser.parse()))):
         for j, square in enumerate(row):
             if len(square.strip()) > 0:
-                node_features[chess.square(j, i)] = piece_to_tensor(square)
+                node_features[chess.square(
+                    j, i)] = fen_parser.piece_to_tensor(square)
 
             # whose turn it's to move
             # NOTE: this could be encoded also as a global feature for the whole graph
             # but we'll do it like this for simplicity i
-            if fen.white_to_move():
+            if fen_parser.white_to_move():
                 node_features[chess.square(j, i)][0] = 1
 
     return node_features
@@ -333,11 +125,7 @@ def fen_to_edge_features(fen_parser, edges):
     white_to_move = fen_parser.white_to_move()
 
     # 1. map pieces to squares
-    pieces = {}
-    for i, row in enumerate(list(reversed(fen_parser.parse()))):
-        for j, square in enumerate(row):
-            if len(square.strip()) > 0:
-                pieces[chess.square(j, i)] = chess.Piece.from_symbol(square)
+    pieces = fen_parser.get_board().piece_map()
 
     moves = 0
     promoted = []
@@ -435,6 +223,11 @@ def create_graph_from_fen(fen_parser: str, edges) -> Data:
     )
 
 
+def parse_chess_data(chess_data: str) -> list:
+    fen, evaluation = chess_data.split(',')
+    return FenParser(fen), parse_evaluation(evaluation)
+
+
 class FENDataset(Dataset):
     def __init__(self, fen_file, transform=None, pre_transform=None):
         super().__init__(None, transform, pre_transform)
@@ -465,52 +258,13 @@ class FENDataset(Dataset):
         return graph
 
 
-class FENDatasetPreLoaded(InMemoryDataset):
-    """FENDataset for preprocessed graphs"""
-
-    def __init__(self, root, fen_file, edges, transform=None, pre_transform=None):
-        self.fen_file = fen_file
-        self.edges = edges
-        super().__init__(root, transform, pre_transform)
-        self.data, self.slices = torch.load(self.processed_paths[0])
-
-    @property
-    def processed_file_names(self):
-        return ['data.pt']
-
-    def process(self):
-        # Read the FEN file and preprocess the data
-        with open(self.fen_file, 'r') as f:
-            fen_list = [line.strip() for line in f]
-
-        data_list = []
-        for fen_str in fen_list:
-            fen_parser, evaluation = parse_chess_data(fen_str)
-            graph = create_graph_from_fen(fen_parser, self.edges)
-            graph.y = normalize_evaluation(evaluation)
-            data_list.append(graph)
-
-        # Save preprocessed data
-        data, slices = self.collate(data_list)
-        torch.save((data, slices), self.processed_paths[0])
-
-
+@hydra.main(version_base=None, config_path="config", config_name="default")
 def infer(fen, cp):
-
     print(f"Evaluate position: {fen}")
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    # Hyperparameters
-    in_channels = 13
-    hidden_channels = 64
-    num_iterations = 3
-
     # Model
-    model = AttentionEPDGNN(
-        in_channels=in_channels,
-        hidden_channels=hidden_channels,
-        out_channels=1
-    )
+    model = instantiate(cfg.model)
 
     model.to(device)
 
@@ -538,11 +292,7 @@ def infer(fen, cp):
 
 @hydra.main(version_base=None, config_path="config", config_name="default")
 def train(cfg: DictConfig):
-
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-    print(type(cfg))
-    print(cfg)
 
     dataset = FENDataset(cfg.training.data)
 
@@ -566,29 +316,18 @@ def train(cfg: DictConfig):
     test_loader = DataLoader(
         test_dataset, batch_size=batch_size, shuffle=False)
 
-    # Training loop
-
-    lr = 0.001
-
-    # Model
     model = instantiate(cfg.model)
-    # model = AttentionEPDGNN(
-    #     in_channels=in_channels,
-    #     hidden_channels=hidden_channels,
-    #     out_channels=1
-    # )
-    # model = GNNModel()
-
-    print(model)
 
     # Move model to GPU if available
     model.to(device)
 
     # Optimizer
+    lr = 0.001
     optimizer = optim.Adam(model.parameters(), lr=lr)
 
     # Mean Squared Error for regression (centipawn evaluation)
-    criterion = torch.nn.MSELoss()
+    # CrossEntropyLoss for classification task
+    criterion = instantiate(cfg.loss)
 
     # Number of epochs to train for
     epochs = 200
@@ -782,26 +521,77 @@ def normalize_evalutions(chess_data):
         data['evaluation'].values, dtype=torch.float)
 
 
-@hydra.main(version_base=None, config_path="config", config_name="default")
-def run(cfg, chess_data):
-    print(OmegaConf.to_yaml(cfg))
+def from_fens(fen: str, evaluation: str, edges: torch.Tensor) -> Data:
+    bins = 128
+    fen_parser = FenParser(fen)
+    graph = create_graph_from_fen(fen_parser, edges)
+
+    if evaluation.startswith('#'):
+        # win rate probability 99-100%
+        graph.y = bins - 1
+    else:
+        evaluation = abs(int(evaluation))
+        graph.y = win_rate_to_bin(win_rate_model(
+            evaluation, fen_parser.piece_counts()), bins)
+    return graph
 
 
 if __name__ == '__main__':
 
     chess_data = "first_10k_evaluations.csv"
 
+    fen = '5r1k/4b1p1/2p3qp/3n3r/2B1p3/4P1P1/Q2B1P1P/2R1R1K1 b - - 2 45'
+    edges = create_edges()
+
+    raw_file = 'first_10k_evaluations'
+    train_set = FensOnDisk(root='dataset/', split='train',
+                           from_fens=from_fens, create_edges=create_edges)
+    val_set = FensOnDisk(root='dataset/', split='val',
+                         from_fens=from_fens, create_edges=create_edges)
+    test_set = FensOnDisk(root='dataset/', split='test',
+                          from_fens=from_fens, create_edges=create_edges)
+
+    train_loader = DataLoader(
+        train_set,
+        batch_size=32,
+        shuffle=True,
+        num_workers=2,
+    )
+    val_loader = DataLoader(
+        val_set,
+        batch_size=32,
+        shuffle=True,
+        num_workers=2,
+    )
+    test_loader = DataLoader(
+        test_set,
+        batch_size=32,
+        shuffle=True,
+        num_workers=2,
+    )
+
+    for step, batch in enumerate(tqdm(train_loader)):
+        continue
+    for step, batch in enumerate(tqdm(val_loader)):
+        continue
+    for step, batch in enumerate(tqdm(test_loader)):
+        continue
+
+    # Train batch:
+    # DataBatch(x=[2048, 13], edge_index=[2, 59392], edge_attr=[59392, 15], y=[32], batch=[2048], ptr=[33])
+
     # Normalize evaluations
-    normalize_evalutions(chess_data)
+    # normalize_evalutions(chess_data)
 
     # train
-    train()
+    # train()
 
     # game loop
     # play()
 
-    run()
-
+    # Evalution: 85
+    # Win rate: 29.103874448486668 per cent
+    # Bin: 37
     position = {'PAWN': 8, 'KNIGHT': 2, 'BISHOP': 2, 'ROOK': 2, 'QUEEN': 0}
     eval_score = 75
     win_rate = win_rate_model(eval_score, position)
