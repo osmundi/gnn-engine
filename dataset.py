@@ -34,21 +34,18 @@ class FensOnDisk(OnDiskDataset):
 
     """
 
-    def __init__(self, root, split=None, transform=None, pre_transform=None, from_fens: Optional[Callable] = None, create_edges: Optional[Callable] = None):
+    def __init__(self, root, dataset, edges=None, split=None, transform=None, pre_transform=None, from_fens: Optional[Callable] = None):
 
         self.from_fens = from_fens
-        self.edges = create_edges()
+        self.dataset = dataset
+        self.edges = edges
         self.split = split
 
         schema = {
-            'x': dict(dtype=torch.int64, size=(-1, 13)),
+            'x': dict(dtype=torch.float, size=(-1, 13)),
             'edge_index': dict(dtype=torch.int64, size=(2, -1)),
-            'edge_attr': dict(dtype=torch.int64, size=(-1, 15)),
-            'y': float
-            # TODO: hardcode or use -1?
-            # 'x': dict(dtype=torch.int64, size=(64, 13)),
-            # 'edge_index': dict(dtype=torch.int64, size=(2, 1856)),
-            # 'edge_attr': dict(dtype=torch.int64, size=(1856, 15)),
+            'edge_attr': dict(dtype=torch.float, size=(-1, 15)),
+            'y': int
         }
 
         super().__init__(root, transform, pre_transform, schema=schema)
@@ -60,7 +57,7 @@ class FensOnDisk(OnDiskDataset):
 
     @property
     def raw_file_names(self) -> List[str]:
-        return ['first_10k_evaluations.csv', 'ranges.pt']
+        return [self.dataset, 'ranges.pt']
 
     def download(self) -> None:
         pass

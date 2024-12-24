@@ -3,8 +3,6 @@ import torch
 import numpy as np
 import pandas as pd
 
-global all_evaluations
-
 
 def normalize_evalutions(chess_data):
 
@@ -16,8 +14,7 @@ def normalize_evalutions(chess_data):
     )
 
     # Convert evaluations to a PyTorch tensor
-    all_evaluations = torch.tensor(
-        data['evaluation'].values, dtype=torch.float)
+    return torch.tensor(data['evaluation'].values, dtype=torch.float)
 
 
 def calculate_inverse_output(input_value: str) -> int:
@@ -53,8 +50,7 @@ def normalize_log_evaluation(evaluation: int) -> float:
     return torch.sign(data) * torch.log(torch.abs(data) + 1)
 
 
-def normalize_evaluation(evaluation: int) -> float:
-    evaluations = all_evaluations
+def normalize_evaluation(evaluation: int, evaluations) -> float:
 
     # Compute median and IQR
     median = torch.median(evaluations)
@@ -69,9 +65,7 @@ def normalize_evaluation(evaluation: int) -> float:
     return torch.tanh(robust_scaled_evaluations)  # Limits to [-1, 1]
 
 
-def denormalize_evaluation(normalized_data: float) -> float:
-    evaluations = all_evaluations
-
+def denormalize_evaluation(normalized_data: float, evaluations) -> float:
     # Compute median and IQR
     median = torch.median(evaluations)
     q1 = torch.quantile(evaluations, 0.25)
@@ -152,4 +146,4 @@ def win_rate_model(eval_score, position):
 
 def win_rate_to_bin(rate, bins=128):
     """Binning: divide winrates between [0,1] to a 128 classes"""
-    return int(rate * bins)
+    return min(max(0, int(rate * (bins - 1))), bins - 1)

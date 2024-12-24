@@ -214,7 +214,7 @@ def fen_to_edge_features(fen_parser, edges):
 
 # one graph is ~150kb, so creating 13M of these takes about 2TB disk space
 # -> create graphs on the fly for now
-def create_graph_from_fen(fen_parser: str, edges) -> Data:
+def create_graph_from_fen(fen_parser, edges) -> Data:
     return Data(
         x=fen_to_node_features(fen_parser),
         edge_index=edges,
@@ -230,12 +230,13 @@ def parse_chess_data(chess_data: str) -> list:
 class FENDataset(Dataset):
     # TODO: move to datasets.py
 
-    def __init__(self, fen_file, transform=None, pre_transform=None):
+    def __init__(self, fen_file, all_evaluations, transform=None, pre_transform=None):
         super().__init__(None, transform, pre_transform)
         with open(fen_file, 'r') as f:
             self.fen_list = [line.strip() for line in f]
 
         self.edges = create_edges()
+        self.evaluations = all_evaluations
         self.cache = {}
 
     def len(self):
@@ -252,14 +253,13 @@ class FENDataset(Dataset):
 
         # store the evaluation
         # graph.y = torch.tensor(evaluation, dtype=torch.float)
-        graph.y = normalize_evaluation(evaluation)
+        graph.y = normalize_evaluation(evaluation, self.evaluations)
 
         self.cache[idx] = graph
 
         return graph
 
 
-@hydra.main(version_base=None, config_path="config", config_name="default")
 def infer(fen, cp):
     print(f"Evaluate position: {fen}")
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -295,11 +295,14 @@ def infer(fen, cp):
 def train(cfg: DictConfig):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    train_loader, val_loader, test_loader = load_datasets(on_disk=False)
+    train_loader, val_loader, test_loader = load_datasets(cfg)
+    # train_loader, val_loader, test_loader = load_datasets(cfg, on_disk=False)
 
     batch_size = cfg.training.batch_size
 
     model = instantiate(cfg.model)
+
+    print(model)
 
     # Move model to GPU if available
     model.to(device)
@@ -350,7 +353,10 @@ def train(cfg: DictConfig):
 
                 # Calculate the loss, assuming batch.y contains the evaluations
                 # loss = criterion(output, batch.y)
-                loss = criterion(output, batch.y.view(-1, 1))
+
+                loss = criterion(output, batch.y.long())
+                # for MSE
+                #loss = criterion(output, batch.y.view(-1, 1))
 
                 # Backpropagation
                 loss.backward()
@@ -378,7 +384,7 @@ def train(cfg: DictConfig):
                 mlflow.log_metric("train_loss", avg_train_loss, step=epoch)
 
             if epoch % 10 == 0:
-                checkpoint = 'checkpoints/500k/AttentionEPDGNN_checkpoint_{:03d}.pt'.format(
+                checkpoint = 'checkpoints/100k/AttentionEPDGNN_checkpoint_{:03d}.pt'.format(
                     epoch+1)
                 torch.save({
                     'epoch': epoch + 1,
@@ -398,8 +404,8 @@ def train(cfg: DictConfig):
 
                     output = model(batch)
 
-                    # loss = criterion(output, batch.y)
-                    loss = criterion(output, batch.y.view(-1, 1))
+                    # loss = criterion(output, batch.y.view(-1, 1))
+                    loss = criterion(output, batch.y.long())
                     val_loss += loss.item()
 
             avg_val_loss = val_loss / len(val_loader)
@@ -423,7 +429,8 @@ def train(cfg: DictConfig):
         for batch in test_loader:
             batch = batch.to(device)
             output = model(batch)
-            loss = criterion(output, batch.y.view(-1, 1))
+            #loss = criterion(output, batch.y.view(-1, 1))
+            loss = criterion(output, batch.y.long())
             test_loss += loss.item()
 
             # MAE calculation
@@ -504,32 +511,41 @@ def from_fens(fen: str, evaluation: str, edges: torch.Tensor) -> Data:
     return graph
 
 
-@hydra.main(version_base=None, config_path="config", config_name="default")
-def load_datasets(on_disk=True):
+def load_datasets(cfg, on_disk=True):
     """
     Separate data to training, validation and testing sets
 
     Return dataloaders for these split datasets
+
+
+    DataBatch(x=[2048, 13], edge_index=[2, 59392], edge_attr=[59392, 15], y=[32], batch=[2048], ptr=[33])
+
+    DataBatch(x=[1024, 13], edge_index=[2, 59392], edge_attr=[29696, 15], y=[32], batch=[1024], ptr=[33])
+
+
     """
 
     batch_size = cfg.training.batch_size
-    dataset = FENDataset(cfg.training.data)
+    chess_data = cfg.training.data
 
     if on_disk:
-        train_set = FensOnDisk(root='dataset/', split='train',
-                               from_fens=from_fens, create_edges=create_edges)
-        val_set = FensOnDisk(root='dataset/', split='val',
-                             from_fens=from_fens, create_edges=create_edges)
-        test_set = FensOnDisk(root='dataset/', split='test',
-                              from_fens=from_fens, create_edges=create_edges)
+        edges = create_edges()
+        train_set = FensOnDisk('dataset/', chess_data, split='train',
+                               from_fens=from_fens, edges=edges)
+        val_set = FensOnDisk('dataset/', chess_data, split='val',
+                             from_fens=from_fens, edges=edges)
+        test_set = FensOnDisk('dataset/', chess_data, split='test',
+                              from_fens=from_fens, edges=edges)
     else:
+        all_evaluations = normalize_evalutions(chess_data)
+        dataset = FENDataset(chess_data, all_evaluations)
         # Define lengths for train, validation, and test
         train_len = int(0.7 * len(dataset))  # 70% for training
         val_len = int(0.15 * len(dataset))   # 15% for validation
         test_len = len(dataset) - train_len - val_len  # 15% for testing
 
         # Split the dataset into train, validation, and test sets
-        train_dataset, val_dataset, test_dataset = random_split(
+        train_set, val_set, test_set = random_split(
             dataset, [train_len, val_len, test_len])
 
     train_loader = DataLoader(
@@ -556,27 +572,24 @@ def load_datasets(on_disk=True):
 
 if __name__ == '__main__':
 
-    chess_data = "first_10k_evaluations.csv"
+    chess_data = "first_100k_evaluations.csv"
 
+    create_split_dict(chess_data)
     fen = '5r1k/4b1p1/2p3qp/3n3r/2B1p3/4P1P1/Q2B1P1P/2R1R1K1 b - - 2 45'
 
-    train_loader, val_loader, test_loader = load_datasets()
-
-    for step, batch in enumerate(tqdm(train_loader)):
-        continue
-    for step, batch in enumerate(tqdm(val_loader)):
-        continue
-    for step, batch in enumerate(tqdm(test_loader)):
-        continue
+    # train_loader, val_loader, test_loader = load_datasets()
+    #
+    # for step, batch in enumerate(tqdm(train_loader)):
+    #     continue
 
     # Train batch:
     # DataBatch(x=[2048, 13], edge_index=[2, 59392], edge_attr=[59392, 15], y=[32], batch=[2048], ptr=[33])
 
     # Normalize evaluations
-    # normalize_evalutions(chess_data)
+    # all_evaluations = normalize_evalutions(chess_data)
 
     # train
-    # train()
+    train()
 
     # game loop
     # play()

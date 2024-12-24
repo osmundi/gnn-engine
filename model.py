@@ -94,20 +94,20 @@ class AttentionEPDGNN(nn.Module):
 
 
 class GNNModel(nn.Module):
-    def __init__(self, num_features=13, hidden_size=64, target_size=1):
+    def __init__(self, in_channels=13, hidden_channels=64, out_channels=1):
         super(GNNModel, self).__init__()
-        self.num_features = num_features
-        self.hidden_size = hidden_size
-        self.target_size = target_size
-        self.convs = [GATConv(self.num_features, self.hidden_size, edge_dim = 15).to('cuda'),
-                      GATConv(self.hidden_size, self.hidden_size, edge_dim = 15).to('cuda')]
-        self.linear = nn.Linear(self.hidden_size, self.target_size)
+        self.in_channels = in_channels
+        self.hidden_channels = hidden_channels
+        self.out_channels = out_channels
+        self.convs = [GATConv(self.in_channels, self.hidden_channels, edge_dim = 15),
+                      GATConv(self.hidden_channels, self.hidden_channels, edge_dim = 15)]
+        self.linear = nn.Linear(self.hidden_channels, self.out_channels)
 
     def forward(self, data):
         x, edge_index, edge_attr, batch = data.x, data.edge_index, data.edge_attr, data.batch
 
         for conv in self.convs[:-1]:
-            x = conv(x=x, edge_index=edge_index, edge_attr=edge_attr) # adding edge features here!
+            x = conv(x, edge_index, edge_attr=edge_attr) # adding edge features here!
             x = F.relu(x)
             x = F.dropout(x, training=self.training)
         x = self.convs[-1](x=x, edge_index=edge_index, edge_attr=edge_attr) # edge features here as well
@@ -116,4 +116,4 @@ class GNNModel(nn.Module):
         x = global_mean_pool(x, batch)  # 'batch' tensor tells which nodes belong to which graph
 
         x = self.linear(x)
-        return torch.tanh(x)
+        return x
