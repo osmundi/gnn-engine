@@ -1,6 +1,7 @@
 
 training:
   data: first_10k_evaluations.csv
+  batch_size: 32
 
 model: 
   _target_: model.AttentionEPDGNN

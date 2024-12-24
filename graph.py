@@ -6,7 +6,6 @@ import hydra
 from omegaconf import DictConfig
 from hydra.utils import instantiate
 import chess
-import pandas as pd
 import torch
 import torch.optim as optim
 from torch.utils.data import random_split
@@ -229,6 +228,8 @@ def parse_chess_data(chess_data: str) -> list:
 
 
 class FENDataset(Dataset):
+    # TODO: move to datasets.py
+
     def __init__(self, fen_file, transform=None, pre_transform=None):
         super().__init__(None, transform, pre_transform)
         with open(fen_file, 'r') as f:
@@ -294,27 +295,9 @@ def infer(fen, cp):
 def train(cfg: DictConfig):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    dataset = FENDataset(cfg.training.data)
+    train_loader, val_loader, test_loader = load_datasets(on_disk=False)
 
-    # Separate data to training, validation and testing sets
-    # Define lengths for train, validation, and test
-    train_len = int(0.7 * len(dataset))  # 70% for training
-    val_len = int(0.15 * len(dataset))   # 15% for validation
-    test_len = len(dataset) - train_len - val_len  # 15% for testing
-
-    # Split the dataset into train, validation, and test sets
-    train_dataset, val_dataset, test_dataset = random_split(
-        dataset, [train_len, val_len, test_len])
-
-    batch_size = 32
-
-    # Create DataLoaders for each split
-    train_loader = DataLoader(
-        train_dataset, batch_size=batch_size, shuffle=False, num_workers=8, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size,
-                            shuffle=False, num_workers=8, pin_memory=True)
-    test_loader = DataLoader(
-        test_dataset, batch_size=batch_size, shuffle=False)
+    batch_size = cfg.training.batch_size
 
     model = instantiate(cfg.model)
 
@@ -506,21 +489,6 @@ def play():
         fen = board.fen()
 
 
-def normalize_evalutions(chess_data):
-
-    data = pd.read_csv(chess_data, header=None, names=["fen", "evaluation"])
-
-    # Assuming "evaluation" is the second column after splitting
-    data['evaluation'] = data['evaluation'].apply(
-        lambda x: 1000 if '#+' in x else (-1000 if '#-' in x else int(x.strip()))
-    )
-
-    # Convert evaluations to a PyTorch tensor
-    global all_evaluations
-    all_evaluations = torch.tensor(
-        data['evaluation'].values, dtype=torch.float)
-
-
 def from_fens(fen: str, evaluation: str, edges: torch.Tensor) -> Data:
     bins = 128
     fen_parser = FenParser(fen)
@@ -536,20 +504,33 @@ def from_fens(fen: str, evaluation: str, edges: torch.Tensor) -> Data:
     return graph
 
 
-if __name__ == '__main__':
+@hydra.main(version_base=None, config_path="config", config_name="default")
+def load_datasets(on_disk=True):
+    """
+    Separate data to training, validation and testing sets
 
-    chess_data = "first_10k_evaluations.csv"
+    Return dataloaders for these split datasets
+    """
 
-    fen = '5r1k/4b1p1/2p3qp/3n3r/2B1p3/4P1P1/Q2B1P1P/2R1R1K1 b - - 2 45'
-    edges = create_edges()
+    batch_size = cfg.training.batch_size
+    dataset = FENDataset(cfg.training.data)
 
-    raw_file = 'first_10k_evaluations'
-    train_set = FensOnDisk(root='dataset/', split='train',
-                           from_fens=from_fens, create_edges=create_edges)
-    val_set = FensOnDisk(root='dataset/', split='val',
-                         from_fens=from_fens, create_edges=create_edges)
-    test_set = FensOnDisk(root='dataset/', split='test',
-                          from_fens=from_fens, create_edges=create_edges)
+    if on_disk:
+        train_set = FensOnDisk(root='dataset/', split='train',
+                               from_fens=from_fens, create_edges=create_edges)
+        val_set = FensOnDisk(root='dataset/', split='val',
+                             from_fens=from_fens, create_edges=create_edges)
+        test_set = FensOnDisk(root='dataset/', split='test',
+                              from_fens=from_fens, create_edges=create_edges)
+    else:
+        # Define lengths for train, validation, and test
+        train_len = int(0.7 * len(dataset))  # 70% for training
+        val_len = int(0.15 * len(dataset))   # 15% for validation
+        test_len = len(dataset) - train_len - val_len  # 15% for testing
+
+        # Split the dataset into train, validation, and test sets
+        train_dataset, val_dataset, test_dataset = random_split(
+            dataset, [train_len, val_len, test_len])
 
     train_loader = DataLoader(
         train_set,
@@ -569,6 +550,17 @@ if __name__ == '__main__':
         shuffle=True,
         num_workers=2,
     )
+
+    return train_loader, val_loader, test_loader
+
+
+if __name__ == '__main__':
+
+    chess_data = "first_10k_evaluations.csv"
+
+    fen = '5r1k/4b1p1/2p3qp/3n3r/2B1p3/4P1P1/Q2B1P1P/2R1R1K1 b - - 2 45'
+
+    train_loader, val_loader, test_loader = load_datasets()
 
     for step, batch in enumerate(tqdm(train_loader)):
         continue

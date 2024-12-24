@@ -1,4 +1,25 @@
 
+import torch
+import numpy as np
+import pandas as pd
+
+global all_evaluations
+
+
+def normalize_evalutions(chess_data):
+
+    data = pd.read_csv(chess_data, header=None, names=["fen", "evaluation"])
+
+    # Assuming "evaluation" is the second column after splitting
+    data['evaluation'] = data['evaluation'].apply(
+        lambda x: 1000 if '#+' in x else (-1000 if '#-' in x else int(x.strip()))
+    )
+
+    # Convert evaluations to a PyTorch tensor
+    all_evaluations = torch.tensor(
+        data['evaluation'].values, dtype=torch.float)
+
+
 def calculate_inverse_output(input_value: str) -> int:
     """
     Define the range of the output values checkmate in 100 moves is equivalent 
@@ -132,4 +153,3 @@ def win_rate_model(eval_score, position):
 def win_rate_to_bin(rate, bins=128):
     """Binning: divide winrates between [0,1] to a 128 classes"""
     return int(rate * bins)
-
