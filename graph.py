@@ -16,7 +16,7 @@ import mlflow
 import mlflow.pytorch
 from tqdm import tqdm
 
-from dataset import FensOnDisk, create_split_dict
+from dataset import FensOnDisk
 from util import *
 from fen_parser import FenParser
 
@@ -313,7 +313,14 @@ def train(cfg: DictConfig):
 
     # Mean Squared Error for regression (centipawn evaluation)
     # CrossEntropyLoss for classification task
-    criterion = instantiate(cfg.loss)
+
+    # hack
+    if cfg.loss._target_ == "torch.nn.CrossEntropyLoss":
+        class_weights = torch.load(f'dataset/raw/class_weights/{cfg.training.data.rsplit('.', 1)[0]}.pt')
+        print("class weights:", class_weights)
+        criterion = instantiate(cfg.loss, weight=class_weights)
+    else:
+        criterion = instantiate(cfg.loss)
 
     # Number of epochs to train for
     epochs = 200
@@ -341,6 +348,9 @@ def train(cfg: DictConfig):
             train_loss = 0.0
             total_mae = 0
 
+            correct = 0 
+            total = 0
+
             for batch_id, batch in enumerate(train_loader):
                 # Move batch to device (GPU or CPU)
                 batch = batch.to(device)
@@ -351,12 +361,17 @@ def train(cfg: DictConfig):
                 # Forward pass: Get model predictions
                 output = model(batch)
 
+                # print(output)
+                # print(output.shape)
+                # print(batch.y)
+                # print(batch.y.shape)
+
                 # Calculate the loss, assuming batch.y contains the evaluations
                 # loss = criterion(output, batch.y)
 
                 loss = criterion(output, batch.y.long())
                 # for MSE
-                #loss = criterion(output, batch.y.view(-1, 1))
+                # loss = criterion(output, batch.y.view(-1, 1))
 
                 # Backpropagation
                 loss.backward()
@@ -366,18 +381,23 @@ def train(cfg: DictConfig):
                 # Track loss
                 train_loss += loss.item()
 
-                # debugging model outputs
-                # if batch_id % 100 == 0:
-                # print("-----")
-                # print(output)
-                # print(predicted)
-                # print(batch.y)
-                # print("-----")
+
+                # Calculate accuracy
+
+                # Predicted classes: index of the max logit
+                _, predicted = torch.max(output, dim=1)  # Shape: [batch_size]
+
+                # Calculate correct predictions
+                correct += (predicted == batch.y).sum().item()
+                total += batch.y.size(0)
+
+            # Accuracy
+            accuracy = 100 * correct / total
 
             # Calculate average training loss and accuracy
             avg_train_loss = train_loss / len(train_loader)
 
-            print(f'Epoch {epoch+1}/{epochs}, Loss: {avg_train_loss:.4f}')
+            print(f'Epoch {epoch+1}/{epochs}, Loss: {avg_train_loss:.4f}, Acc: {accuracy:.4f}')
 
             if tracking_url:
                 # Log metrics
@@ -429,7 +449,7 @@ def train(cfg: DictConfig):
         for batch in test_loader:
             batch = batch.to(device)
             output = model(batch)
-            #loss = criterion(output, batch.y.view(-1, 1))
+            # loss = criterion(output, batch.y.view(-1, 1))
             loss = criterion(output, batch.y.long())
             test_loss += loss.item()
 
@@ -496,18 +516,10 @@ def play():
         fen = board.fen()
 
 
-def from_fens(fen: str, evaluation: str, edges: torch.Tensor) -> Data:
-    bins = 128
+def from_fens(fen: str, evaluation: int, edges: torch.Tensor) -> Data:
     fen_parser = FenParser(fen)
     graph = create_graph_from_fen(fen_parser, edges)
-
-    if evaluation.startswith('#'):
-        # win rate probability 99-100%
-        graph.y = bins - 1
-    else:
-        evaluation = abs(int(evaluation))
-        graph.y = win_rate_to_bin(win_rate_model(
-            evaluation, fen_parser.piece_counts()), bins)
+    graph.y = evaluation
     return graph
 
 
@@ -571,11 +583,6 @@ def load_datasets(cfg, on_disk=True):
 
 
 if __name__ == '__main__':
-
-    chess_data = "first_100k_evaluations.csv"
-
-    create_split_dict(chess_data)
-    fen = '5r1k/4b1p1/2p3qp/3n3r/2B1p3/4P1P1/Q2B1P1P/2R1R1K1 b - - 2 45'
 
     # train_loader, val_loader, test_loader = load_datasets()
     #

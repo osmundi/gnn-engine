@@ -1,14 +1,14 @@
 
 training:
-  data: first_100k_evaluations.csv
+  data: first_10k_evaluations.csv
   batch_size: 32
 
 model: 
   _target_: model.GNNModel
   #_target_: model.AttentionEPDGNN
   in_channels: 13
-  hidden_channels: 64
-  out_channels: 128
+  hidden_channels: 128
+  out_channels: 64
 
 loss:
   # for regression task

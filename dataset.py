@@ -57,7 +57,7 @@ class FensOnDisk(OnDiskDataset):
 
     @property
     def raw_file_names(self) -> List[str]:
-        return [self.dataset, 'ranges.pt']
+        return [self.dataset, f'ranges/{self.dataset.rsplit('.', 1)[0]}.pt']
 
     def download(self) -> None:
         pass
@@ -88,24 +88,3 @@ class FensOnDisk(OnDiskDataset):
         return Data.from_dict(data)
 
 
-def create_split_dict(dataset):
-    dataset = pd.read_csv(dataset)
-
-    total_rows = len(dataset)
-    print(total_rows)
-
-    train_ratio = 0.7
-    val_ratio = 0.15
-
-    # Compute the lengths
-    train_len = int(total_rows * train_ratio)
-    val_len = int(total_rows * val_ratio)
-
-    ranges = {
-        'train': torch.arange(0, train_len),
-        'val': torch.arange(train_len, train_len + val_len),
-        'test': torch.arange(train_len + val_len, total_rows)
-    }
-
-    # Save the dictionary to a file
-    torch.save(ranges, 'ranges.pt')
