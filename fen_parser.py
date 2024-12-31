@@ -73,9 +73,23 @@ class FenParser():
         position = position.upper()
         return Counter(position)
 
-    def piece_to_tensor(self, piece: str) -> Tensor:
+    def piece_to_tensor(self, symbol: str, white_to_move: bool) -> Tensor:
         """node features: these represent the pieces on the squares (nodes)"""
-        piece = chess.Piece.from_symbol(piece)
+        piece = chess.Piece.from_symbol(symbol)
         node_feature = zeros(13)
-        node_feature[piece.__hash__() + 1] = 1
+
+        # Old way: node_feature[piece.__hash__() + 1] = 1
+        if white_to_move:
+            if symbol.isupper():
+                node_feature[piece.piece_type] = 1
+            else:
+                node_feature[piece.piece_type + 6] = 1
+        else:
+            if symbol.isupper():
+                node_feature[piece.piece_type + 6] = 1
+            else:
+                node_feature[piece.piece_type] = 1
+
         return node_feature
+
+

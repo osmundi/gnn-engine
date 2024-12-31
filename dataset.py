@@ -44,7 +44,7 @@ class FensOnDisk(OnDiskDataset):
         schema = {
             'x': dict(dtype=torch.float, size=(-1, 13)),
             'edge_index': dict(dtype=torch.int64, size=(2, -1)),
-            'edge_attr': dict(dtype=torch.float, size=(-1, 15)),
+            'edge_attr': dict(dtype=torch.float, size=(-1, 12)),
             'y': int
         }
 
@@ -57,7 +57,7 @@ class FensOnDisk(OnDiskDataset):
 
     @property
     def raw_file_names(self) -> List[str]:
-        return [self.dataset, f'ranges/{self.dataset.rsplit('.', 1)[0]}.pt']
+        return [self.dataset, f"ranges/{self.dataset.rsplit('.', 1)[0]}.pt"]
 
     def download(self) -> None:
         pass

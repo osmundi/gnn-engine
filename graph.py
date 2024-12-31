@@ -12,6 +12,8 @@ from torch.utils.data import random_split
 from torch_geometric.data import DataLoader
 from torch_geometric.data import Dataset
 from torch_geometric.data import Data
+from torch_geometric.nn.models import GAT
+from torch_geometric.nn import global_mean_pool
 import mlflow
 import mlflow.pytorch
 from tqdm import tqdm
@@ -93,19 +95,34 @@ def parse_evaluation(evaluation: str) -> int:
 
 
 def fen_to_node_features(fen_parser):
+    """
+    node features: these represent the pieces on the squares (nodes)
+
+    0: white/black to move
+    1: current player pawn
+    2: current player knight
+    3: current player bishop
+    4: current player rook
+    5: current player queen
+    6: current player king
+    7: opponent pawn
+    ...
+    12. opponent king
+    """
     num_nodes = 64
     node_features = torch.zeros((num_nodes, 13))
+    white_to_move = fen_parser.white_to_move()
 
     for i, row in enumerate(list(reversed(fen_parser.parse()))):
         for j, square in enumerate(row):
             if len(square.strip()) > 0:
-                node_features[chess.square(
-                    j, i)] = fen_parser.piece_to_tensor(square)
+                node_features[chess.square(j, i)] = fen_parser.piece_to_tensor(
+                    square, white_to_move)
 
             # whose turn it's to move
             # NOTE: this could be encoded also as a global feature for the whole graph
-            # but we'll do it like this for simplicity i
-            if fen_parser.white_to_move():
+            # but we'll do it like this for simplicity
+            if white_to_move:
                 node_features[chess.square(j, i)][0] = 1
 
     return node_features
@@ -119,7 +136,7 @@ def alphabetical_distance(char1, char2):
 def fen_to_edge_features(fen_parser, edges):
 
     # initialize edge feature tensor
-    edge_features = torch.zeros((edges.size(1), 15))
+    edge_features = torch.zeros((edges.size(1), 12))
 
     white_to_move = fen_parser.white_to_move()
 
@@ -161,46 +178,41 @@ def fen_to_edge_features(fen_parser, edges):
         edge_features[edge][0] = 1
 
         # what piece could move between two nodes
-        if pieces[start].piece_type == 1:
-            # pawn
-            if white_to_move:
-                edge_features[edge][1] = 1
-            else:
-                edge_features[edge][2] = 1
-        elif pieces[start].piece_type == 6:
-            # king
-            if white_to_move:
-                edge_features[edge][3] = 1
-            else:
-                edge_features[edge][4] = 1
-        elif pieces[start].piece_type == 5:
-            # queen
-            edge_features[edge][5] = 1
-        elif pieces[start].piece_type == 2:
-            # knight
-            edge_features[edge][6] = 1
-        elif pieces[start].piece_type == 3:
-            # bishop
-            edge_features[edge][7] = 1
-        elif pieces[start].piece_type == 4:
-            # rook
-            edge_features[edge][8] = 1
-        else:
-            assert False, f"Did not recognize piece symbol: {pieces[start].piece_type}"
+        edge_features[edge][pieces[start].piece_type] = 1
+        # if pieces[start].piece_type == 1:
+        #     # pawn
+        #     edge_features[edge][1] = 1
+        # elif pieces[start].piece_type == 2:
+        #     # knight
+        #     edge_features[edge][2] = 1
+        # elif pieces[start].piece_type == 3:
+        #     # bishop
+        #     edge_features[edge][3] = 1
+        # elif pieces[start].piece_type == 4:
+        #     # rook
+        #     edge_features[edge][4] = 1
+        # elif pieces[start].piece_type == 5:
+        #     # queen
+        #     edge_features[edge][5] = 1
+        # elif pieces[start].piece_type == 6:
+        #     # king
+        #     edge_features[edge][6] = 1
+        # else:
+        #     assert False, f"Did not recognize piece symbol: {pieces[start].piece_type}"
 
         # castling
         if move == "e1g1" and fen_parser.can_castle('w', 'k'):
-            edge_features[edge][10] = 1
+            edge_features[edge][7] = 1
         if move == "e1c1" and fen_parser.can_castle('w', 'q'):
-            edge_features[edge][11] = 1
+            edge_features[edge][8] = 1
         if move == "e8g8" and fen_parser.can_castle('b', 'k'):
-            edge_features[edge][12] = 1
+            edge_features[edge][9] = 1
         if move == "e8c8" and fen_parser.can_castle('b', 'q'):
-            edge_features[edge][13] = 1
+            edge_features[edge][10] = 1
 
         # pawn promotion
         if promote:
-            edge_features[edge][14] = 1
+            edge_features[edge][11] = 1
             promote = False
 
         # edge length
@@ -308,7 +320,8 @@ def train(cfg: DictConfig):
     model.to(device)
 
     # Optimizer
-    lr = 0.001
+    # lr = 0.001
+    lr = 0.0001
     optimizer = optim.Adam(model.parameters(), lr=lr)
 
     # Mean Squared Error for regression (centipawn evaluation)
@@ -316,7 +329,8 @@ def train(cfg: DictConfig):
 
     # hack
     if cfg.loss._target_ == "torch.nn.CrossEntropyLoss":
-        class_weights = torch.load(f'dataset/raw/class_weights/{cfg.training.data.rsplit('.', 1)[0]}.pt')
+        class_weights = torch.load(
+            f"dataset/raw/class_weights/{cfg.training.data.rsplit('.', 1)[0]}.pt")
         print("class weights:", class_weights)
         criterion = instantiate(cfg.loss, weight=class_weights)
     else:
@@ -348,10 +362,10 @@ def train(cfg: DictConfig):
             train_loss = 0.0
             total_mae = 0
 
-            correct = 0 
+            correct = 0
             total = 0
 
-            for batch_id, batch in enumerate(train_loader):
+            for batch in tqdm(train_loader):
                 # Move batch to device (GPU or CPU)
                 batch = batch.to(device)
 
@@ -361,10 +375,10 @@ def train(cfg: DictConfig):
                 # Forward pass: Get model predictions
                 output = model(batch)
 
-                # print(output)
-                # print(output.shape)
-                # print(batch.y)
-                # print(batch.y.shape)
+                print(output)
+                print(output.shape)
+                print(batch.y)
+                print(batch.y.shape)
 
                 # Calculate the loss, assuming batch.y contains the evaluations
                 # loss = criterion(output, batch.y)
@@ -381,23 +395,24 @@ def train(cfg: DictConfig):
                 # Track loss
                 train_loss += loss.item()
 
-
                 # Calculate accuracy
 
                 # Predicted classes: index of the max logit
-                _, predicted = torch.max(output, dim=1)  # Shape: [batch_size]
+                # _, predicted = torch.max(output, dim=1)  # Shape: [batch_size]
 
                 # Calculate correct predictions
-                correct += (predicted == batch.y).sum().item()
-                total += batch.y.size(0)
+                # correct += (predicted == batch.y).sum().item()
+                # total += batch.y.size(0)
 
             # Accuracy
-            accuracy = 100 * correct / total
+            # accuracy = 100 * correct / total
+            accuracy = 0
 
             # Calculate average training loss and accuracy
             avg_train_loss = train_loss / len(train_loader)
 
-            print(f'Epoch {epoch+1}/{epochs}, Loss: {avg_train_loss:.4f}, Acc: {accuracy:.4f}')
+            print(
+                f'Epoch {epoch+1}/{epochs}, Loss: {avg_train_loss:.4f}, Acc: {accuracy:.4f}')
 
             if tracking_url:
                 # Log metrics
@@ -562,20 +577,20 @@ def load_datasets(cfg, on_disk=True):
 
     train_loader = DataLoader(
         train_set,
-        batch_size=32,
-        shuffle=True,
+        batch_size=batch_size,
+        # shuffle=True,
         num_workers=2,
     )
     val_loader = DataLoader(
         val_set,
-        batch_size=32,
-        shuffle=True,
+        batch_size=batch_size,
+        # shuffle=True,
         num_workers=2,
     )
     test_loader = DataLoader(
         test_set,
-        batch_size=32,
-        shuffle=True,
+        batch_size=batch_size,
+        # shuffle=True,
         num_workers=2,
     )
 
