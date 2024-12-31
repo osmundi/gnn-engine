@@ -1,14 +1,23 @@
 
+data:
+  bins: 16
+  edge:
+    features: 12
+  node:
+    features: 13
+
 training:
-  data: first_10k_evaluations.csv
+  data: first_100k_evaluations.csv
   batch_size: 32
 
 model: 
-  _target_: model.GNNModel
+  _target_: model.GATv2
   #_target_: model.AttentionEPDGNN
-  in_channels: 13
+  #_target_: torch_geometric.nn.models.GAT
+  in_channels: ${data.node.features}
   hidden_channels: 128
-  out_channels: 64
+  out_channels: ${data.bins}
+  num_layers: 3
 
 loss:
   # for regression task
