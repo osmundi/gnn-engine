@@ -4,13 +4,14 @@ import torch.nn.functional as F
 from torch_geometric.nn import MessagePassing
 from torch_geometric.nn import GCNConv, GATConv, global_mean_pool, global_add_pool
 from torch_geometric.utils import softmax
+from torch import manual_seed
 
 # Custom Message Passing Layer
 class CustomMessagePassing(MessagePassing):
     def __init__(self, in_channels, out_channels, aggr='add'):
         super(CustomMessagePassing, self).__init__(aggr=aggr)
         self.linear = nn.Linear(in_channels, out_channels)
-        self.edge_encoder = nn.Linear(15, out_channels)
+        self.edge_encoder = nn.Linear(12, out_channels)
 
     def forward(self, x, edge_index, edge_attr=None):
         return self.propagate(edge_index, x=x, edge_attr=edge_attr)
@@ -93,14 +94,13 @@ class AttentionEPDGNN(nn.Module):
         return out
 
 
-class GNNModel(nn.Module):
-    def __init__(self, in_channels=13, hidden_channels=64, out_channels=1):
+class GAT(nn.Module):
+    def __init__(self, in_channels=13, hidden_channels=64, out_channels=1, num_layers=5):
         super(GNNModel, self).__init__()
         self.in_channels = in_channels
         self.hidden_channels = hidden_channels
         self.out_channels = out_channels
-        self.convs = [GATConv(self.in_channels, self.hidden_channels, edge_dim = 15),
-                      GATConv(self.hidden_channels, self.hidden_channels, edge_dim = 15)]
+        self.convs = [GATConv(self.in_channels, self.hidden_channels, edge_dim = 12) for _ in inum]
         self.linear = nn.Linear(self.hidden_channels, self.out_channels)
 
     def forward(self, data):
@@ -117,3 +117,32 @@ class GNNModel(nn.Module):
 
         x = self.linear(x)
         return x
+
+
+class GATv2(nn.Module):
+    def __init__(self, in_channels, hidden_channels, out_channels):
+        super(GATv2, self).__init__()
+        manual_seed(12345)
+        self.conv1 = GATConv(in_channels, hidden_channels, edge_dim=12)
+        self.conv2 = GATConv(hidden_channels, hidden_channels, edge_dim=12)
+        self.conv3 = GATConv(hidden_channels, hidden_channels, edge_dim=12)
+        self.lin = nn.Linear(hidden_channels, out_channels)
+
+    def forward(self, data):
+        x, edge_index, edge_attr, batch = data.x, data.edge_index, data.edge_attr, data.batch
+        # 1. Obtain node embeddings 
+        x = self.conv1(x, edge_index)
+        x = x.relu()
+        x = self.conv2(x, edge_index)
+        x = x.relu()
+        x = self.conv3(x, edge_index)
+
+        # 2. Readout layer
+        x = global_mean_pool(x, batch)  # [batch_size, hidden_channels]
+
+        # 3. Apply a final classifier
+        x = F.dropout(x, p=0.5, training=self.training)
+        x = self.lin(x)
+        
+        return x
+
