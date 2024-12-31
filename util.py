@@ -146,4 +146,4 @@ def win_rate_model(eval_score, position):
 
 def win_rate_to_bin(rate, bins=128):
     """Binning: divide winrates between [0,1] to a N classes"""
-    return min(max(0, int(rate * (bins - 1))), bins - 1)
+    return min(max(0, int(rate * bins)), bins - 1)

@@ -375,10 +375,10 @@ def train(cfg: DictConfig):
                 # Forward pass: Get model predictions
                 output = model(batch)
 
-                print(output)
-                print(output.shape)
-                print(batch.y)
-                print(batch.y.shape)
+                # print(output)
+                # print(output.shape)
+                # print(batch.y)
+                # print(batch.y.shape)
 
                 # Calculate the loss, assuming batch.y contains the evaluations
                 # loss = criterion(output, batch.y)

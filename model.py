@@ -120,22 +120,21 @@ class GAT(nn.Module):
 
 
 class GATv2(nn.Module):
-    def __init__(self, in_channels, hidden_channels, out_channels):
+    def __init__(self, in_channels, hidden_channels, out_channels, num_layers=3):
         super(GATv2, self).__init__()
         manual_seed(12345)
-        self.conv1 = GATConv(in_channels, hidden_channels, edge_dim=12)
-        self.conv2 = GATConv(hidden_channels, hidden_channels, edge_dim=12)
-        self.conv3 = GATConv(hidden_channels, hidden_channels, edge_dim=12)
+        self.first_conv = GATConv(in_channels, hidden_channels, edge_dim=12)
+        self.convs = [GATConv(self.hidden_channels, self.hidden_channels, edge_dim = 12) for _ in num_layers]
         self.lin = nn.Linear(hidden_channels, out_channels)
 
     def forward(self, data):
         x, edge_index, edge_attr, batch = data.x, data.edge_index, data.edge_attr, data.batch
         # 1. Obtain node embeddings 
-        x = self.conv1(x, edge_index)
-        x = x.relu()
-        x = self.conv2(x, edge_index)
-        x = x.relu()
-        x = self.conv3(x, edge_index)
+        x = self.first_conv(x, edge_index, edge_attr=edge_attr)
+
+        for conv in self.convs:
+            x = x.relu()
+            x = conv(x, edge_index, edge_attr=edge_attr)
 
         # 2. Readout layer
         x = global_mean_pool(x, batch)  # [batch_size, hidden_channels]

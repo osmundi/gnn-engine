@@ -4,6 +4,8 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 from sklearn.utils.class_weight import compute_class_weight
 import numpy as np
+import hydra
+from omegaconf import DictConfig
 
 from fen_parser import FenParser
 from util import win_rate_model, win_rate_to_bin
@@ -57,17 +59,19 @@ def plot(data):
     plt.show()
 
 
-if __name__ == '__main__':
 
+@hydra.main(version_base=None, config_path="config", config_name="default")
+def preprocess(cfg: DictConfig):
     base_dir = 'dataset/raw'
-    file_name = 'first_10k_evaluations'
+    file_name = 'first_100k_evaluations'
     raw_data = f'{base_dir}/unprocessed/{file_name}.csv'
+
+    bins = cfg.data.bins / 2
 
     # process raw data
     df = pd.read_csv(raw_data)
     iterator = enumerate(zip(df['fen'], df['evaluation']))
     d = {'fen': [], 'evaluation': []}
-    bins = 64
     for _, (fen, evaluation) in tqdm(iterator, total=len(df)):
         fen_parser = FenParser(fen)
 
@@ -77,9 +81,18 @@ if __name__ == '__main__':
             # win rate probability 100%
             bin = bins - 1
         else:
-            evaluation = abs(int(evaluation))
             bin = win_rate_to_bin(win_rate_model(
-                evaluation, fen_parser.piece_counts()), bins)
+                abs(int(evaluation)), fen_parser.piece_counts()), bins)
+
+        # use negative evaluations in classes
+        # if black to move and original evaluation is positive
+        # OR if white to move and original evaluation is negative
+        # -> multiply bin by -1
+        if fen_parser.white_to_move() and (evaluation.startswith('#-') or evaluation.startswith('-')):
+            bin += bins
+            #bin = bin * -1
+        if not fen_parser.white_to_move() and (evaluation.startswith('#+') or evaluation.startswith('+')):
+            bin += bins
 
         d['evaluation'].append(bin)
 
@@ -94,3 +107,7 @@ if __name__ == '__main__':
 
     # plot classes
     plot(d['evaluation'])
+
+
+if __name__ == '__main__':
+    preprocess()
