@@ -98,7 +98,7 @@ def fen_to_node_features(fen_parser):
     """
     node features: these represent the pieces on the squares (nodes)
 
-    0: white/black to move
+    0: white/black to move (global feature)
     1: current player pawn
     2: current player knight
     3: current player bishop
@@ -108,6 +108,8 @@ def fen_to_node_features(fen_parser):
     7: opponent pawn
     ...
     12. opponent king
+    13. current player attacks
+    14. opponent attacks
     """
     num_nodes = 64
     node_features = torch.zeros((num_nodes, 13))
@@ -124,6 +126,14 @@ def fen_to_node_features(fen_parser):
             # but we'll do it like this for simplicity
             if white_to_move:
                 node_features[chess.square(j, i)][0] = 1
+
+            attacked_by_white = fen.get_board().is_attacked_by(chess.WHITE, chess.square(j,i))
+            if attacked_by_white:
+                node_features[chess.square(j, i)][13] = 1
+                
+            attacked_by_black = fen.get_board().is_attacked_by(chess.BLACK, chess.square(j,i))
+            if attacked_by_black:
+                node_features[chess.square(j, i)][14] = 1
 
     return node_features
 
