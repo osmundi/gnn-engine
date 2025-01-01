@@ -76,7 +76,7 @@ class FenParser():
     def piece_to_tensor(self, symbol: str, white_to_move: bool) -> Tensor:
         """node features: these represent the pieces on the squares (nodes)"""
         piece = chess.Piece.from_symbol(symbol)
-        node_feature = zeros(13)
+        node_feature = zeros(15)
 
         # Old way: node_feature[piece.__hash__() + 1] = 1
         if white_to_move:

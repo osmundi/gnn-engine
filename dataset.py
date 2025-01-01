@@ -42,7 +42,7 @@ class FensOnDisk(OnDiskDataset):
         self.split = split
 
         schema = {
-            'x': dict(dtype=torch.float, size=(-1, 13)),
+            'x': dict(dtype=torch.float, size=(-1, 15)),
             'edge_index': dict(dtype=torch.int64, size=(2, -1)),
             'edge_attr': dict(dtype=torch.float, size=(-1, 12)),
             'y': int

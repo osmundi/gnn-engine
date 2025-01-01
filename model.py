@@ -49,7 +49,7 @@ class AttentionGlobalPooling(nn.Module):
 
 # EPD GNN Architecture for a Single Graph
 class AttentionEPDGNN(nn.Module):
-    def __init__(self, in_channels, hidden_channels, out_channels, num_processors=2):
+    def __init__(self, in_channels, hidden_channels, out_channels, num_layers=2):
         super(AttentionEPDGNN, self).__init__()
 
         # Encoder: Node feature transformation
@@ -60,7 +60,7 @@ class AttentionEPDGNN(nn.Module):
         # Processor: Stack of message-passing layers
         self.processors = nn.ModuleList([
             CustomMessagePassing(hidden_channels, hidden_channels)
-            for _ in range(num_processors)
+            for _ in range(num_layers)
         ])
 
         # Attention-based global pooling
@@ -96,11 +96,11 @@ class AttentionEPDGNN(nn.Module):
 
 class GAT(nn.Module):
     def __init__(self, in_channels=13, hidden_channels=64, out_channels=1, num_layers=5):
-        super(GNNModel, self).__init__()
+        super(GAT, self).__init__()
         self.in_channels = in_channels
         self.hidden_channels = hidden_channels
         self.out_channels = out_channels
-        self.convs = [GATConv(self.in_channels, self.hidden_channels, edge_dim = 12) for _ in inum]
+        self.convs = [GATConv(self.in_channels, self.hidden_channels, edge_dim = 12) for _ in range(num_layers)]
         self.linear = nn.Linear(self.hidden_channels, self.out_channels)
 
     def forward(self, data):
@@ -123,8 +123,8 @@ class GATv2(nn.Module):
     def __init__(self, in_channels, hidden_channels, out_channels, num_layers=3):
         super(GATv2, self).__init__()
         manual_seed(12345)
-        self.first_conv = GATConv(in_channels, hidden_channels, edge_dim=12)
-        self.convs = [GATConv(self.hidden_channels, self.hidden_channels, edge_dim = 12) for _ in num_layers]
+        self.first_conv = GATConv(in_channels, hidden_channels, edge_dim=12).to('cuda')
+        self.convs = [GATConv(hidden_channels, hidden_channels, edge_dim = 12).to('cuda') for _ in range(num_layers)]
         self.lin = nn.Linear(hidden_channels, out_channels)
 
     def forward(self, data):

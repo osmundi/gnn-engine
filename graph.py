@@ -112,7 +112,7 @@ def fen_to_node_features(fen_parser):
     14. opponent attacks
     """
     num_nodes = 64
-    node_features = torch.zeros((num_nodes, 13))
+    node_features = torch.zeros((num_nodes, 15))
     white_to_move = fen_parser.white_to_move()
 
     for i, row in enumerate(list(reversed(fen_parser.parse()))):
@@ -127,11 +127,11 @@ def fen_to_node_features(fen_parser):
             if white_to_move:
                 node_features[chess.square(j, i)][0] = 1
 
-            attacked_by_white = fen.get_board().is_attacked_by(chess.WHITE, chess.square(j,i))
+            attacked_by_white = fen_parser.get_board().is_attacked_by(chess.WHITE, chess.square(j,i))
             if attacked_by_white:
                 node_features[chess.square(j, i)][13] = 1
                 
-            attacked_by_black = fen.get_board().is_attacked_by(chess.BLACK, chess.square(j,i))
+            attacked_by_black = fen_parser.get_board().is_attacked_by(chess.BLACK, chess.square(j,i))
             if attacked_by_black:
                 node_features[chess.square(j, i)][14] = 1
 
@@ -330,8 +330,9 @@ def train(cfg: DictConfig):
     model.to(device)
 
     # Optimizer
-    # lr = 0.001
-    lr = 0.0001
+    #lr = 0.01
+    lr = 0.001
+    #lr = 0.0001
     optimizer = optim.Adam(model.parameters(), lr=lr)
 
     # Mean Squared Error for regression (centipawn evaluation)
@@ -342,7 +343,7 @@ def train(cfg: DictConfig):
         class_weights = torch.load(
             f"dataset/raw/class_weights/{cfg.training.data.rsplit('.', 1)[0]}.pt")
         print("class weights:", class_weights)
-        criterion = instantiate(cfg.loss, weight=class_weights)
+        criterion = instantiate(cfg.loss, weight=class_weights).cuda()
     else:
         criterion = instantiate(cfg.loss)
 

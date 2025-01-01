@@ -4,20 +4,20 @@ data:
   edge:
     features: 12
   node:
-    features: 13
+    features: 15
 
 training:
   data: first_100k_evaluations.csv
   batch_size: 32
 
 model: 
-  _target_: model.GATv2
-  #_target_: model.AttentionEPDGNN
+  #_target_: model.GATv2
+  _target_: model.AttentionEPDGNN
   #_target_: torch_geometric.nn.models.GAT
   in_channels: ${data.node.features}
   hidden_channels: 128
   out_channels: ${data.bins}
-  num_layers: 3
+  num_layers: 6
 
 loss:
   # for regression task
