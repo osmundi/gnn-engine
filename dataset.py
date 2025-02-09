@@ -68,6 +68,7 @@ class FensOnDisk(OnDiskDataset):
 
         iterator = enumerate(zip(df['fen'], df['evaluation']))
 
+        # TODO: parallelize
         for i, (fen, evaluation) in tqdm(iterator, total=len(df)):
             data = self.from_fens(fen, evaluation, self.edges)
             data_list.append(data)

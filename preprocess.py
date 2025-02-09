@@ -19,8 +19,8 @@ def write_with_classes(d, base_dir, file_name):
 
 def create_split_dict(dataset, base_path, file_name):
     total_rows = len(dataset)
-    train_ratio = 0.7
-    val_ratio = 0.15
+    train_ratio = 0.9
+    val_ratio = 0.05
 
     # Compute the lengths
     train_len = int(total_rows * train_ratio)
@@ -64,6 +64,7 @@ def plot(data):
 def preprocess(cfg: DictConfig):
     base_dir = 'dataset/raw'
     file_name = 'first_100k_evaluations'
+    file_name = 'chessData'
     raw_data = f'{base_dir}/unprocessed/{file_name}.csv'
 
     bins = cfg.data.bins / 2
@@ -77,22 +78,27 @@ def preprocess(cfg: DictConfig):
 
         d['fen'].append(fen)
 
-        if evaluation.startswith('#'):
-            # win rate probability 100%
+        # cfg.data.bins == 16 (local bins == 8)
+        # white to win:
+        # [0,1,2,3,4,5,6,7]
+        # black to win:
+        # [8,9,10,11,12,13,14,15]
+
+        # win rate probability 100%
+        if evaluation.startswith('#+'):
             bin = bins - 1
+        elif evaluation.startswith('#-'):
+            bin = cfg.data.bins - 1
         else:
             bin = win_rate_to_bin(win_rate_model(
                 abs(int(evaluation)), fen_parser.piece_counts()), bins)
 
-        # use negative evaluations in classes
-        # if black to move and original evaluation is positive
-        # OR if white to move and original evaluation is negative
-        # -> multiply bin by -1
-        if fen_parser.white_to_move() and (evaluation.startswith('#-') or evaluation.startswith('-')):
-            bin += bins
-            #bin = bin * -1
-        if not fen_parser.white_to_move() and (evaluation.startswith('#+') or evaluation.startswith('+')):
-            bin += bins
+            # use negative evaluations in classes
+            # if black to move and original evaluation is positive
+            # OR if white to move and original evaluation is negative
+            # -> multiply bin by -1
+            if evaluation.startswith('-'):
+                bin += bins
 
         d['evaluation'].append(bin)
 

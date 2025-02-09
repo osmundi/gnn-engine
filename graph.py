@@ -341,7 +341,7 @@ def train(cfg: DictConfig):
     # hack
     if cfg.loss._target_ == "torch.nn.CrossEntropyLoss":
         class_weights = torch.load(
-            f"dataset/raw/class_weights/{cfg.training.data.rsplit('.', 1)[0]}.pt")
+            f"{cfg.training.root_dir}dataset/raw/class_weights/{cfg.training.data.rsplit('.', 1)[0]}.pt")
         print("class weights:", class_weights)
         criterion = instantiate(cfg.loss, weight=class_weights).cuda()
     else:
@@ -568,11 +568,13 @@ def load_datasets(cfg, on_disk=True):
 
     if on_disk:
         edges = create_edges()
-        train_set = FensOnDisk('dataset/', chess_data, split='train',
+        print("create train set")
+        train_set = FensOnDisk(f'{cfg.training.root_dir}dataset/', chess_data, split='train',
                                from_fens=from_fens, edges=edges)
-        val_set = FensOnDisk('dataset/', chess_data, split='val',
+        print("create val/test set")
+        val_set = FensOnDisk(f'{cfg.training.root_dir}dataset/', chess_data, split='val',
                              from_fens=from_fens, edges=edges)
-        test_set = FensOnDisk('dataset/', chess_data, split='test',
+        test_set = FensOnDisk(f'{cfg.training.root_dir}dataset/', chess_data, split='test',
                               from_fens=from_fens, edges=edges)
     else:
         all_evaluations = normalize_evalutions(chess_data)
@@ -590,19 +592,19 @@ def load_datasets(cfg, on_disk=True):
         train_set,
         batch_size=batch_size,
         # shuffle=True,
-        num_workers=2,
+        num_workers=6,
     )
     val_loader = DataLoader(
         val_set,
         batch_size=batch_size,
         # shuffle=True,
-        num_workers=2,
+        num_workers=6,
     )
     test_loader = DataLoader(
         test_set,
         batch_size=batch_size,
         # shuffle=True,
-        num_workers=2,
+        num_workers=6,
     )
 
     return train_loader, val_loader, test_loader
